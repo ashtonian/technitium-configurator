@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: technitium-configurator
+  labels:
+    app: technitium-configurator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: technitium-configurator
+  template:
+    metadata:
+      labels:
+        app: technitium-configurator
+    spec:
+      serviceAccountName: technitium-configur
+      initContainers:
+      - name: create-token
+        image: ${DOCKER_REGISTRY}/technitium-configurator:latest
+        command:
+          - /app/technitium-configurator
+          - create-token
+        env:
+          - name: DNS_API_URL
+            valueFrom:
+              configMapKeyRef:
+                name: technitium-config
+                key: dns_api_url
+          - name: DNS_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: technitium-credentials
+                key: username
+          - name: DNS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: technitium-credentials
+                key: password
+        volumeMounts:
+          - name: token-volume
+            mountPath: /app/token.yaml
+            subPath: token.yaml
+      containers:
+      - name: technitium-configurator
+        image: ${DOCKER_REGISTRY}/technitium-configurator:latest
+        command:
+          - /app/technitium-configurator
+          - configure
+          - /app/config.yaml
+        env:
+          - name: DNS_API_URL
+            valueFrom:
+              configMapKeyRef:
+                name: technitium-config
+                key: dns_api_url
+        volumeMounts:
+          - name: config-volume
+            mountPath: /app/config.yaml
+            subPath: config.yaml
+          - name: token-volume
+            mountPath: /app/token.yaml
+            subPath: token.yaml
+      volumes:
+      - name: config-volume
+        configMap:
+          name: technitium-config
+      - name: token-volume
+        secret:
+          secretName: technitium-token
+          items:
+            - key: token
+              path: token.yaml
