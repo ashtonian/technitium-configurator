@@ -20,14 +20,7 @@ Currently supports:
 
 To add support for a new app:
 
-1. Add a new config struct in `pkg/config/config.go`:
-```go
-type NewAppConfig struct {
-    Name    string                 `yaml:"name"`
-    Url     string                 `yaml:"url"`
-    Config  map[string]interface{} `yaml:"config"`
-}
-```
+1. Add a new config struct in `pkg/technitium/`, struct needs json and yaml tags.
 
 2. Add a case in the app configuration switch statement in `main.go`:
 ```go
