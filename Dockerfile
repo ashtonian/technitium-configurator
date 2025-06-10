@@ -1,5 +1,7 @@
+# syntax=docker/dockerfile:1.4
+
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
@@ -10,20 +12,26 @@ RUN apk add --no-cache git
 COPY go.mod go.sum ./
 
 # Download dependencies
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
 # Copy source code
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o technitium-configurator
+ARG GO_BUILD_FLAGS="-ldflags=-s -w"
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build ${GO_BUILD_FLAGS} -o technitium-configurator
 
 # Final stage
-FROM alpine:latest
+FROM --platform=$TARGETPLATFORM alpine:latest
 
 WORKDIR /app
 
-# Copy the binary from builder
+# Copy the binary and config
 COPY --from=builder /app/technitium-configurator /app/
+COPY --from=builder /app/config.yaml /app/
 
 ENTRYPOINT ["/app/technitium-configurator"]
