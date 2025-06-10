@@ -8,8 +8,6 @@ A Go tool for configuring Technitium DNS Server, supporting both one-time setup 
 - Configure DNS server settings
 - Manage DNS zones and records
 - Install and configure apps
-- Kubernetes-ready with init container support
-- Flexible configuration via environment variables or YAML files
 
 ## Supported Apps
 
