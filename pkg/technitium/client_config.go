@@ -1,70 +1,32 @@
-package config
+package technitium
 
 import (
 	"fmt"
 	"os"
 	"reflect"
+	"time"
 
-	"github.com/ashtonian/technitium-sdk-go/pkg/technitium"
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the root configuration structure
-type Config struct {
-	DNSSettings technitium.DnsSettings `yaml:"dnsSettings"`
-	Zones       []ZoneConfig           `yaml:"zones"`
-	Records     []RecordConfig         `yaml:"records"`
-	Apps        []technitium.AppConfig `yaml:"apps"`
-}
-
-// ZoneConfig represents a zone configuration
-type ZoneConfig struct {
-	technitium.ZoneCreateRequest `yaml:",inline"`
-	ACLSettings                  *technitium.ACLSettings `yaml:"aclSettings,omitempty"`
-}
-
-// RecordConfig represents a DNS record configuration
-type RecordConfig struct {
-	technitium.AddRecordRequest `yaml:",inline"`
-}
-
-// Credentials represents the credentials configuration
-type Credentials struct {
-	Username    string `yaml:"username"`
-	Password    string `yaml:"password"`
-	NewPassword string `yaml:"newPassword"` // Only used for change-password command
-}
-
-// TokenConfig represents the token configuration
-type TokenConfig struct {
-	Token string `yaml:"token"`
-}
-
 // ClientConfig represents the client configuration structure
 type ClientConfig struct {
-	// Server configuration
-	APIURL string `yaml:"api_url" env:"DNS_API_URL"`
-
-	// Authentication configuration
-	APIToken string `yaml:"api_token" env:"DNS_API_TOKEN"`
-	Username string `yaml:"username" env:"DNS_USERNAME"`
-	Password string `yaml:"password" env:"DNS_PASSWORD"`
-
-	// Command-specific configuration
-	NewPassword string `yaml:"new_password" env:"DNS_NEW_PASSWORD"`
-
-	// File paths
-	ConfigPath      string `yaml:"-"` // Not stored in YAML, set via flag
-	CredentialsPath string `yaml:"credentials_path" env:"DNS_CREDENTIALS_PATH"`
-	TokenPath       string `yaml:"token_path" env:"DNS_TOKEN_PATH"`
+	APIURL      string        `yaml:"api_url" env:"DNS_API_URL"`
+	APIToken    string        `yaml:"api_token" env:"DNS_API_TOKEN"`
+	Username    string        `yaml:"username" env:"DNS_USERNAME"`
+	Password    string        `yaml:"password" env:"DNS_PASSWORD"`
+	NewPassword string        `yaml:"new_password" env:"DNS_NEW_PASSWORD"`
+	ConfigPath  string        `yaml:"-"` // Not stored in YAML, set via flag
+	TokenPath   string        `yaml:"token_path" env:"DNS_TOKEN_PATH"`
+	Timeout     time.Duration `yaml:"timeout" env:"DNS_TIMEOUT"`
 }
 
-// DefaultConfig returns a ClientConfig with default values
+// DefaultConfig returns a new ClientConfig with default values
 func DefaultConfig() *ClientConfig {
 	return &ClientConfig{
-		ConfigPath:      "config.yaml",
-		CredentialsPath: "credentials.yaml",
-		TokenPath:       "token.yaml",
+		ConfigPath: "config.yaml",
+		TokenPath:  "token.yaml",
+		Timeout:    30 * time.Second,
 	}
 }
 
@@ -98,7 +60,16 @@ func (c *ClientConfig) LoadFromEnv() error {
 		}
 
 		if envVal := os.Getenv(envTag); envVal != "" {
-			val.Field(i).SetString(envVal)
+			// Special handling for timeout
+			if field.Type == reflect.TypeOf(time.Duration(0)) {
+				duration, err := time.ParseDuration(envVal)
+				if err != nil {
+					return fmt.Errorf("invalid timeout value: %w", err)
+				}
+				val.Field(i).Set(reflect.ValueOf(duration))
+			} else {
+				val.Field(i).SetString(envVal)
+			}
 		}
 	}
 
@@ -109,6 +80,10 @@ func (c *ClientConfig) LoadFromEnv() error {
 func (c *ClientConfig) Validate(command string) error {
 	if c.APIURL == "" {
 		return fmt.Errorf("API URL is required (set DNS_API_URL or api_url in config)")
+	}
+
+	if c.Timeout <= 0 {
+		return fmt.Errorf("timeout must be greater than 0")
 	}
 
 	switch command {

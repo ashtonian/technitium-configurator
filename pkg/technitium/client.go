@@ -6,34 +6,53 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/go-querystring/query"
 )
 
+// Client represents a Technitium DNS Server API client
 type Client struct {
 	Base      string
 	Token     string
 	hc        *http.Client
 	transport http.RoundTripper
+	timeout   time.Duration
 }
 
-/*
-TODO:
-- add/update apps
-*/
+// NewClient creates a new Technitium DNS Server API client with the given configuration
+func NewClient(cfg *ClientConfig) *Client {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
 
-func NewClient(base, token string) *Client {
 	t := NewLoggedTransport()
-	return &Client{
-		Base:  strings.TrimRight(base, "/"),
-		Token: token,
+	client := &Client{
+		Base:  strings.TrimRight(cfg.APIURL, "/"),
+		Token: cfg.APIToken,
 		hc: &http.Client{
 			Transport: t,
+			Timeout:   cfg.Timeout,
 		},
+		transport: t,
+		timeout:   cfg.Timeout,
 	}
+
+	// If we have username/password but no token, try to login
+	if cfg.Username != "" && cfg.Password != "" && cfg.APIToken == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+		defer cancel()
+
+		if _, err := client.Login(ctx, cfg.Username, cfg.Password); err != nil {
+			slog.Error("Failed to login with username/password", "error", err)
+		}
+	}
+
+	return client
 }
 
 // normalizePath ensures consistent path handling by:
@@ -53,6 +72,9 @@ func (c *Client) normalizePath(p string) string {
 }
 
 func (c *Client) callGET(ctx context.Context, path string, in any) (*apiResp, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
 	qs, err := query.Values(in)
 	if err != nil {
 		return nil, err
@@ -75,6 +97,9 @@ func (c *Client) callGET(ctx context.Context, path string, in any) (*apiResp, er
 }
 
 func (c *Client) callPOST(ctx context.Context, path string, body any) (*apiResp, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
 	p := url.Values{}
 	p.Set("token", c.Token)
 	var b bytes.Buffer
@@ -96,6 +121,9 @@ func (c *Client) callPOST(ctx context.Context, path string, body any) (*apiResp,
 }
 
 func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiResp, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
 	qs, _ := query.Values(in)
 	qs.Set("token", c.Token)
 
@@ -188,6 +216,10 @@ type LoginResponse struct {
 // Login authenticates with the server and returns a session token.
 // On successful login, the client's token is automatically updated.
 func (c *Client) Login(ctx context.Context, username, password string) (*LoginResponse, error) {
+	// Create a new context with timeout
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
 	params := struct {
 		User        string `url:"user"`
 		Pass        string `url:"pass"`
@@ -200,7 +232,7 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 
 	resp, err := c.callGET(ctx, "/api/user/login", params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("login failed: %w", err)
 	}
 
 	var loginResp LoginResponse

@@ -228,18 +228,6 @@ const (
 	rfc3339NoZone = "2006-01-02T15:04:05" // no "Z±hh:mm"
 )
 
-func parseMaybeZero(s string) (time.Time, error) {
-	if s == "" || s == "0001-01-01T00:00:00" {
-		return time.Time{}, nil // treat as zero value
-	}
-	// try with zone first
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t, nil
-	}
-	// try without zone (assume UTC)
-	return time.ParseInLocation(rfc3339NoZone, s, time.UTC)
-}
-
 type FuzzyTime struct{ time.Time }
 
 func (ft *FuzzyTime) UnmarshalJSON(b []byte) error {
