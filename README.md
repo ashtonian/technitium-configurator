@@ -48,7 +48,7 @@ docker pull ashtonian/technitium-configurator:latest
 
 The configurator supports two methods of configuration:
 
-1. **Environment Variables** (recommended for automation)
+1. **Environment Variables**
    - All settings can be provided via environment variables
    - Environment variables take precedence over YAML config
    - No config files required
