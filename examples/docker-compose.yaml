@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  dns:
+    image: technitium/dns-server:latest
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "5380:5380/tcp"  # Web interface
+    environment:
+      - DNS_SERVER_DOMAIN=example.com
+      - DNS_SERVER_DEFAULT_PASSWORD=changeme
+    volumes:
+      - dns-data:/etc/dns
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5380/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # First container to change the password
+  configurator-password:
+    image: ashtonian/technitium-configurator:latest
+    environment:
+      - DNS_API_URL=http://dns:5380
+      - DNS_USERNAME=admin
+      - DNS_PASSWORD=changeme
+      - DNS_NEW_PASSWORD=securepassword
+      - DNS_TIMEOUT=30s
+    depends_on:
+      dns:
+        condition: service_healthy
+    command: change-password
+    profiles:
+      - setup
+
+  # Second container to apply DNS configuration
+  configurator-configure:
+    image: ashtonian/technitium-configurator:latest
+    environment:
+      - DNS_API_URL=http://dns:5380
+      - DNS_USERNAME=admin
+      - DNS_PASSWORD=securepassword
+      - DNS_TIMEOUT=30s
+    volumes:
+      - ./config:/app/config  # Mount local config directory
+    depends_on:
+      dns:
+        condition: service_healthy
+    command: configure /app/config/dns.yaml
+    profiles:
+      - configure
+
+volumes:
+  dns-data:
