@@ -1,6 +1,12 @@
 name: Docker Build and Push
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (leave empty for automatic versioning)'
+        required: false
+        type: string
   push:
     branches: [ main ]
     tags: [ 'v*' ]
@@ -47,7 +53,10 @@ jobs:
       - name: Calculate version
         id: version
         run: |
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            # Use manually specified version
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
             # If this is a tag, use the tag version
             VERSION=${GITHUB_REF#refs/tags/}
             VERSION=${VERSION#v}
