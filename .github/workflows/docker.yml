@@ -98,7 +98,6 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-            GO_BUILD_FLAGS=-ldflags="-s -w"
           provenance: false
           sbom: false
           no-cache-filters: |

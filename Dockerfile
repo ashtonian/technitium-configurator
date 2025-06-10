@@ -20,10 +20,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 
 # Build the application
-ARG GO_BUILD_FLAGS="-ldflags=-s -w"
+ARG GO_BUILD_FLAGS
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build ${GO_BUILD_FLAGS} -o technitium-configurator
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -ldflags="-s -w" -o technitium-configurator
 
 # Final stage
 FROM --platform=$TARGETPLATFORM alpine:latest
