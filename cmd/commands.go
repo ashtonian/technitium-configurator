@@ -52,17 +52,6 @@ func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command strin
 	return cmd.Run(ctx, cfg, args)
 }
 
-// Config represents the root configuration structure
-type Config struct {
-	DNSSettings DnsSettings `yaml:"dnsSettings"`
-	Zones       []struct {
-		ZoneCreateRequest `yaml:",inline"`
-		ACLSettings       *ACLSettings `yaml:"aclSettings,omitempty"`
-	} `yaml:"zones"`
-	Records []AddRecordRequest `yaml:"records"`
-	Apps    []AppConfig        `yaml:"apps"`
-}
-
 func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
 	client := technitium.NewClient(cfg)
 
