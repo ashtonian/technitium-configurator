@@ -24,14 +24,13 @@ To add support for a new app:
 
 2. Add a case in the app configuration switch statement in `main.go`:
 ```go
-switch app.Name {
-case "blocking":
-    // existing blocking config
-case "forwarding":
-    // existing forwarding config
-case "new-app":
-    // handle new app config
-}
+	switch a.Name {
+	case "Advanced Blocking":
+		cfg = new(BlockingConfig)
+	case "New App":
+		cfg = new(NewAppConfig)
+    ...
+	}
 ```
 
 ## Usage
@@ -39,6 +38,7 @@ case "new-app":
 ### Basic Usage
 
 1. Create a token:
+
 ```bash
 export DNS_API_URL="http://your-dns-server:5380"
 export DNS_USERNAME="admin"
@@ -46,7 +46,8 @@ export DNS_PASSWORD="your-password"
 ./technitium-configurator create-token
 ```
 
-2. Configure DNS server:
+1. Configure DNS server:
+
 ```bash
 export DNS_API_URL="http://your-dns-server:5380"
 ./technitium-configurator configure config.yaml

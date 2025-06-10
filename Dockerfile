@@ -26,8 +26,4 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /app/technitium-configurator /app/
 
-# Create a non-root user
-RUN adduser -D -g '' appuser
-USER appuser
-
 ENTRYPOINT ["/app/technitium-configurator"]
