@@ -61,19 +61,26 @@ jobs:
             VERSION=${GITHUB_REF#refs/tags/}
             VERSION=${VERSION#v}
           else
-            # Get the latest tag
+            # Try to get the latest tag, if none exists, start from v0.0.0
             LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
             LATEST_TAG=${LATEST_TAG#v}
 
-            # Get number of commits since last tag
-            COMMITS_SINCE_TAG=$(git rev-list --count ${LATEST_TAG}..HEAD)
+            # Get the commit count from the beginning of the repository
+            # This ensures we always have a valid number even with no tags
+            COMMITS_SINCE_TAG=$(git rev-list --count HEAD)
 
             # Split version into major and minor
             MAJOR=$(echo $LATEST_TAG | cut -d. -f1)
             MINOR=$(echo $LATEST_TAG | cut -d. -f2)
 
+            # If we couldn't parse the version properly, default to 0.0
+            if [[ -z "$MAJOR" ]] || [[ -z "$MINOR" ]]; then
+              MAJOR=0
+              MINOR=0
+            fi
+
             # Calculate new version
-            VERSION="${MAJOR}.$((MINOR + COMMITS_SINCE_TAG))"
+            VERSION="${MAJOR}.${COMMITS_SINCE_TAG}"
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
