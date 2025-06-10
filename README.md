@@ -25,6 +25,7 @@ To add support for a new app:
 1. Add a new config struct in `pkg/technitium/`, struct needs json and yaml tags.
 
 2. Add a case in the app configuration switch statement in `main.go`:
+
 ```go
 	switch a.Name {
 	case "Advanced Blocking":
@@ -42,7 +43,7 @@ To add support for a new app:
 The configurator is available as a Docker image:
 
 ```bash
-docker pull ghcr.io/ashtonian/technitium-configurator:latest
+docker pull ashtonian/technitium-configurator:latest
 ```
 
 ### Configuration Methods
@@ -78,7 +79,7 @@ docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="your-password" \
-  ghcr.io/ashtonian/technitium-configurator:latest create-token
+  ashtonian/technitium-configurator:latest create-token
 ```
 
 2. Configure DNS server (using environment variables):
@@ -87,7 +88,7 @@ docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
   -e DNS_API_TOKEN="your-token" \
   -v "$(pwd)/config.yaml:/app/config.yaml" \
-  ghcr.io/ashtonian/technitium-configurator:latest configure config.yaml
+  ashtonian/technitium-configurator:latest configure config.yaml
 ```
 
 3. Change password:
@@ -97,7 +98,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="current-password" \
   -e DNS_NEW_PASSWORD="new-password" \
-  ghcr.io/ashtonian/technitium-configurator:latest change-password
+  ashtonian/technitium-configurator:latest change-password
 ```
 
 ### Volume Mounts
@@ -114,7 +115,7 @@ docker run --rm \
   -v "$(pwd)/client.yaml:/app/client.yaml" \
   -v "$(pwd)/config.yaml:/app/config.yaml" \
   -v "$(pwd)/token.yaml:/app/token.yaml" \
-  ghcr.io/ashtonian/technitium-configurator:latest configure config.yaml
+  ashtonian/technitium-configurator:latest configure config.yaml
 ```
 
 ### Available Commands
