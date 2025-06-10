@@ -13,6 +13,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var (
+	configPath string
+	clientCfg  *config.ClientConfig
+)
+
+func init() {
+	// Set up command line flags
+	flag.StringVar(&configPath, "config", "", "Path to client configuration file (default: ./client.yaml)")
+}
+
+// getClient returns an authenticated client based on the configuration
+func getClient(ctx context.Context) (*technitium.Client, error) {
+	client := technitium.NewClient(clientCfg.APIURL, clientCfg.APIToken)
+
+	// If no API token is provided, login with username/password
+	if clientCfg.APIToken == "" {
+		if _, err := client.Login(ctx, clientCfg.Username, clientCfg.Password); err != nil {
+			return nil, fmt.Errorf("failed to login: %w", err)
+		}
+	}
+
+	return client, nil
+}
+
 func main() {
 	l := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
@@ -21,24 +45,71 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(),
-			"Usage: %s <command> [options]\n\nCommands:\n  configure <config.yaml>    Configure DNS server using the provided config file\n  create-token              Create an API token and save it to token.yaml\n\nEnvironment variables:\n  DNS_API_URL               Required for both commands\n  DNS_API_TOKEN             Required for configure command\n  DNS_USERNAME              Required for create-token command if not in credentials.yaml\n  DNS_PASSWORD              Required for create-token command if not in credentials.yaml\n", os.Args[0])
+			"Usage: %s [options] <command> [command-options]\n\nOptions:\n", os.Args[0])
 		flag.PrintDefaults()
+		fmt.Fprintf(flag.CommandLine.Output(),
+			"\nCommands:\n"+
+				"  configure <config.yaml>    Configure DNS server using the provided config file\n"+
+				"  create-token              Create an API token and save it to token.yaml\n"+
+				"  change-password           Change the password for the current user\n\n"+
+				"Configuration:\n"+
+				"  Configuration can be provided via:\n"+
+				"  1. YAML file (default: ./client.yaml)\n"+
+				"  2. Environment variables (overrides YAML)\n"+
+				"  3. Command line flags (overrides both)\n\n"+
+				"Environment variables:\n"+
+				"  DNS_API_URL               Required for all commands\n"+
+				"  DNS_API_TOKEN             Optional, used for API token authentication\n"+
+				"  DNS_USERNAME              Required for create-token and change-password\n"+
+				"  DNS_PASSWORD              Required for create-token and change-password\n"+
+				"  DNS_NEW_PASSWORD          Required for change-password\n"+
+				"  DNS_TOKEN_PATH            Path to token file (default: token.yaml)\n")
 	}
+
+	// Parse flags before command
+	flag.Parse()
 
 	if len(os.Args) < 2 {
 		flag.Usage()
 		os.Exit(1)
 	}
 
+	// Initialize configuration
+	clientCfg = config.DefaultConfig()
+
+	// Load configuration from file if specified or use default
+	if configPath == "" {
+		configPath = "client.yaml"
+	}
+	if err := clientCfg.LoadFromFile(configPath); err != nil {
+		slog.Error("Failed to load config file", "error", err, "path", configPath)
+		os.Exit(1)
+	}
+
+	// Override with environment variables
+	if err := clientCfg.LoadFromEnv(); err != nil {
+		slog.Error("Failed to load environment variables", "error", err)
+		os.Exit(1)
+	}
+
+	// Get command and remaining args
 	command := os.Args[1]
 	os.Args = append(os.Args[:1], os.Args[2:]...)
 	flag.Parse()
+
+	// Validate configuration for the command
+	if err := clientCfg.Validate(command); err != nil {
+		slog.Error("Invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	switch command {
 	case "configure":
 		runConfigure()
 	case "create-token":
 		runCreateToken()
+	case "change-password":
+		runChangePassword()
 	default:
 		slog.Error("Unknown command", "command", command)
 		flag.Usage()
@@ -47,39 +118,14 @@ func main() {
 }
 
 func runConfigure() {
-	apiURL := os.Getenv("DNS_API_URL")
-	if apiURL == "" {
-		slog.Error("DNS_API_URL not set")
+	ctx := context.Background()
+	client, err := getClient(ctx)
+	if err != nil {
+		slog.Error("Failed to get client", "error", err)
 		os.Exit(1)
 	}
 
-	// Try to get token from environment variable first
-	apiToken := os.Getenv("DNS_API_TOKEN")
-	if apiToken == "" {
-		// If not in environment, try to read from token.yaml
-		if _, err := os.Stat("token.yaml"); err == nil {
-			data, err := os.ReadFile("token.yaml")
-			if err != nil {
-				slog.Error("Failed to read token.yaml", "error", err)
-				os.Exit(1)
-			}
-			var tokenResp technitium.CreateTokenResponse
-			if err := yaml.Unmarshal(data, &tokenResp); err != nil {
-				slog.Error("Failed to parse token.yaml", "error", err)
-				os.Exit(1)
-			}
-			if tokenResp.Token == "" {
-				slog.Error("No token found in token.yaml")
-				os.Exit(1)
-			}
-			apiToken = tokenResp.Token
-		} else {
-			slog.Error("DNS_API_TOKEN not set and token.yaml not found")
-			os.Exit(1)
-		}
-	}
-
-	cfgPath := "config.yaml"
+	cfgPath := clientCfg.ConfigPath
 	if flag.NArg() > 0 {
 		cfgPath = flag.Arg(0)
 	}
@@ -95,9 +141,6 @@ func runConfigure() {
 		slog.Error("Failed to parse config", "error", err)
 		os.Exit(1)
 	}
-
-	ctx := context.Background()
-	client := technitium.NewClient(apiURL, apiToken)
 
 	// Apply DNS settings
 	if err := client.SetDNSSettings(ctx, cfg.DNSSettings); err != nil {
@@ -238,74 +281,64 @@ func runConfigure() {
 }
 
 func runCreateToken() {
-	apiURL := os.Getenv("DNS_API_URL")
-	if apiURL == "" {
-		slog.Error("DNS_API_URL not set")
+	ctx := context.Background()
+	client, err := getClient(ctx)
+	if err != nil {
+		slog.Error("Failed to get client", "error", err)
 		os.Exit(1)
 	}
 
-	// Check if token.yaml exists and has a valid token
+	// Check if token file exists and has a valid token
 	var existingToken technitium.CreateTokenResponse
-	if _, err := os.Stat("token.yaml"); err == nil {
-		data, err := os.ReadFile("token.yaml")
+	if _, err := os.Stat(clientCfg.TokenPath); err == nil {
+		data, err := os.ReadFile(clientCfg.TokenPath)
 		if err != nil {
-			slog.Error("Failed to read token.yaml", "error", err)
+			slog.Error("Failed to read token file", "error", err, "path", clientCfg.TokenPath)
 			os.Exit(1)
 		}
 		if err := yaml.Unmarshal(data, &existingToken); err != nil {
-			slog.Error("Failed to parse token.yaml", "error", err)
+			slog.Error("Failed to parse token file", "error", err, "path", clientCfg.TokenPath)
 			os.Exit(1)
 		}
 		if existingToken.Token != "" {
-			slog.Error("token.yaml already exists with a valid token")
+			slog.Error("Token file already exists with a valid token", "path", clientCfg.TokenPath)
 			os.Exit(1)
 		}
 	}
-
-	// Try to read credentials from credentials.yaml first
-	var creds config.Credentials
-	if _, err := os.Stat("credentials.yaml"); err == nil {
-		data, err := os.ReadFile("credentials.yaml")
-		if err != nil {
-			slog.Error("Failed to read credentials.yaml", "error", err)
-			os.Exit(1)
-		}
-		if err := yaml.Unmarshal(data, &creds); err != nil {
-			slog.Error("Failed to parse credentials.yaml", "error", err)
-			os.Exit(1)
-		}
-	} else {
-		// Fall back to environment variables
-		creds.Username = os.Getenv("DNS_USERNAME")
-		creds.Password = os.Getenv("DNS_PASSWORD")
-	}
-
-	if creds.Username == "" || creds.Password == "" {
-		slog.Error("DNS_USERNAME and DNS_PASSWORD environment variables or credentials.yaml required")
-		os.Exit(1)
-	}
-
-	// Create a temporary client without token
-	client := technitium.NewClient(apiURL, "")
 
 	// Create the token
-	ctx := context.Background()
-	tokenResp, err := client.CreateToken(ctx, creds.Username, creds.Password, "sdk-token")
+	tokenResp, err := client.CreateToken(ctx, clientCfg.Username, clientCfg.Password, "sdk-token")
 	if err != nil {
 		slog.Error("Failed to create token", "error", err)
 		os.Exit(1)
 	}
 
-	// Save the token to token.yaml
+	// Save the token
 	data, err := yaml.Marshal(tokenResp)
 	if err != nil {
 		slog.Error("Failed to marshal token config", "error", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile("token.yaml", data, 0600); err != nil {
-		slog.Error("Failed to write token.yaml", "error", err)
+	if err := os.WriteFile(clientCfg.TokenPath, data, 0600); err != nil {
+		slog.Error("Failed to write token file", "error", err, "path", clientCfg.TokenPath)
 		os.Exit(1)
 	}
 
-	slog.Info("Token created and saved to token.yaml")
+	slog.Info("Token created and saved", "path", clientCfg.TokenPath)
+}
+
+func runChangePassword() {
+	ctx := context.Background()
+	client, err := getClient(ctx)
+	if err != nil {
+		slog.Error("Failed to get client", "error", err)
+		os.Exit(1)
+	}
+
+	if err := client.ChangePassword(ctx, clientCfg.NewPassword); err != nil {
+		slog.Error("Failed to change password", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("Password changed successfully")
 }
