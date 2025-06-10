@@ -1,6 +1,6 @@
 # Technitium Configurator
 
-A Go tool for configuring Technitium DNS Server, supporting both one-time setup and continuous configuration management.
+A Go tool for configuring Technitium DNS Server, supporting both one-time setup and continuous configuration management (see limitations).
 
 ## Features
 
