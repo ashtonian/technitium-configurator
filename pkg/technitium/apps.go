@@ -34,7 +34,7 @@ func (a *AppConfig) GetConfigJSON() (string, error) {
 		return "", fmt.Errorf("decode app config %q: %w", a.Name, err)
 	}
 
-	b, err := json.Marshal(cfg)
+	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal app config %q: %w", a.Name, err)
 	}

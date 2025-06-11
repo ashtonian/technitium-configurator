@@ -9,30 +9,29 @@ import (
 
 // BlockingConfig represents the full Advanced-Blocking app config.
 type BlockingConfig struct {
-	EnableBlocking                  bool              `yaml:"enableBlocking,omitempty"           json:"enableBlocking,omitempty"`
-	BlockListUrlUpdateIntervalHours int               `yaml:"blockListUrlUpdateIntervalHours,omitempty" json:"blockListUrlUpdateIntervalHours,omitempty"`
-	LocalEndPointGroupMap           map[string]string `yaml:"localEndPointGroupMap,omitempty"    json:"localEndPointGroupMap,omitempty"`
-	NetworkGroupMap                 map[string]string `yaml:"networkGroupMap,omitempty"          json:"networkGroupMap,omitempty"`
-	Groups                          []BlockingGroup   `yaml:"groups,omitempty"                   json:"groups,omitempty"`
+	EnableBlocking                  bool              `yaml:"enableBlocking"           json:"enableBlocking"`
+	BlockListUrlUpdateIntervalHours int               `yaml:"blockListUrlUpdateIntervalHours" json:"blockListUrlUpdateIntervalHours"`
+	LocalEndPointGroupMap           map[string]string `yaml:"localEndPointGroupMap"    json:"localEndPointGroupMap"`
+	NetworkGroupMap                 map[string]string `yaml:"networkGroupMap"          json:"networkGroupMap"`
+	Groups                          []BlockingGroup   `yaml:"groups"                   json:"groups"`
 }
 
 // BlockingGroup represents a single blocking group section.
 type BlockingGroup struct {
-	Name                   string    `yaml:"name,omitempty"                   json:"name,omitempty"`
-	EnableBlocking         bool      `yaml:"enableBlocking,omitempty"         json:"enableBlocking,omitempty"`
-	AllowTxtBlockingReport bool      `yaml:"allowTxtBlockingReport,omitempty" json:"allowTxtBlockingReport,omitempty"`
-	BlockAsNxDomain        bool      `yaml:"blockAsNxDomain,omitempty"        json:"blockAsNxDomain,omitempty"`
-	BlockingAddresses      []string  `yaml:"blockingAddresses,omitempty"      json:"blockingAddresses,omitempty"`
-	Allowed                []string  `yaml:"allowed,omitempty"            json:"allowed,omitempty"`
-	Blocked                []string  `yaml:"blocked,omitempty"            json:"blocked,omitempty"`
-	AllowListUrls          []string  `yaml:"allowListUrls,omitempty"      json:"allowListUrls,omitempty"`
-	BlockListUrls          []ListURL `yaml:"blockListUrls,omitempty"      json:"blockListUrls,omitempty"`
-	AllowedRegex           []string  `yaml:"allowedRegex,omitempty"       json:"allowedRegex,omitempty"`
-	BlockedRegex           []string  `yaml:"blockedRegex,omitempty"       json:"blockedRegex,omitempty"`
-	RegexAllowListUrls     []string  `yaml:"regexAllowListUrls,omitempty" json:"regexAllowListUrls,omitempty"`
-	RegexBlockListUrls     []ListURL `yaml:"regexBlockListUrls,omitempty" json:"regexBlockListUrls,omitempty"`
-
-	AdblockListUrls []ListURL `yaml:"adblockListUrls,omitempty"    json:"adblockListUrls,omitempty"`
+	Name                   string    `yaml:"name"                   json:"name"`
+	EnableBlocking         bool      `yaml:"enableBlocking"         json:"enableBlocking"`
+	AllowTxtBlockingReport bool      `yaml:"allowTxtBlockingReport" json:"allowTxtBlockingReport"`
+	BlockAsNxDomain        bool      `yaml:"blockAsNxDomain"        json:"blockAsNxDomain"`
+	BlockingAddresses      []string  `yaml:"blockingAddresses"      json:"blockingAddresses"`
+	Allowed                []string  `yaml:"allowed" json:"allowed"`
+	Blocked                []string  `yaml:"blocked"            json:"blocked"`
+	AllowListUrls          []string  `yaml:"allowListUrls"      json:"allowListUrls"`
+	BlockListUrls          []ListURL `yaml:"blockListUrls"      json:"blockListUrls"`
+	AllowedRegex           []string  `yaml:"allowedRegex"       json:"allowedRegex"`
+	BlockedRegex           []string  `yaml:"blockedRegex"       json:"blockedRegex"`
+	RegexAllowListUrls     []string  `yaml:"regexAllowListUrls" json:"regexAllowListUrls"`
+	RegexBlockListUrls     []ListURL `yaml:"regexBlockListUrls" json:"regexBlockListUrls"`
+	AdblockListUrls        []ListURL `yaml:"adblockListUrls"    json:"adblockListUrls"`
 }
 
 // Raw object form (exact field names taken from Technitium source).
