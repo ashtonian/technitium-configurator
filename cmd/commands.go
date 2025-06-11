@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/ashtonian/technitium-sdk-go/pkg/kube"
 	"github.com/ashtonian/technitium-sdk-go/pkg/technitium"
 	"gopkg.in/yaml.v3"
 )
@@ -173,7 +174,23 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
 	client := technitium.NewClient(cfg)
 
-	// Only check token file if a path is provided
+	// Check for existing token in Kubernetes secret if configured
+	if cfg.K8sSecretName != "" {
+		k8s, err := kube.NewK8sClient()
+		if err != nil {
+			return fmt.Errorf("failed to create k8s client: %w", err)
+		}
+
+		existingToken, err := k8s.CheckSecretToken(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey)
+		if err != nil {
+			slog.Warn("Failed to check k8s secret", "error", err, "secret", cfg.K8sSecretName)
+		} else if existingToken != "" {
+			slog.Warn("to	ken already exists in k8s secret", "secret", fmt.Sprintf("%s/%s", cfg.K8sSecretNamespace, cfg.K8sSecretName))
+			return nil
+		}
+	}
+
+	// Check for existing token in file if configured
 	if cfg.TokenPath != "" {
 		var existingToken technitium.CreateTokenResponse
 		if _, err := os.Stat(cfg.TokenPath); err == nil {
@@ -181,11 +198,13 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 			if err != nil {
 				return fmt.Errorf("failed to read token file: %w", err)
 			}
+			// TODO: hack unmarshal model
 			if err := yaml.Unmarshal(data, &existingToken); err != nil {
 				return fmt.Errorf("failed to parse token file: %w", err)
 			}
 			if existingToken.Token != "" {
-				return fmt.Errorf("token file already exists with a valid token: %s", cfg.TokenPath)
+				slog.Warn("token already exists in file", "path", cfg.TokenPath)
+				return nil
 			}
 		}
 	}
@@ -196,7 +215,21 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 		return fmt.Errorf("failed to create token: %w", err)
 	}
 
-	// Only save token if a path is provided
+	// Save token to Kubernetes secret if configured
+	if cfg.K8sSecretName != "" {
+		// TODO: dupe k8s, it is a singleton but could be better.
+		k8s, err := kube.NewK8sClient()
+		if err != nil {
+			return fmt.Errorf("failed to create k8s client: %w", err)
+		}
+
+		if err := k8s.CreateOrUpdateSecret(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey, tokenResp.Token); err != nil {
+			return fmt.Errorf("failed to save token to k8s secret: %w", err)
+		}
+		slog.Info("Token saved to k8s secret", "namespace", cfg.K8sSecretNamespace, "name", cfg.K8sSecretName)
+	}
+
+	// Save token to file if configured
 	if cfg.TokenPath != "" {
 		data, err := yaml.Marshal(tokenResp)
 		if err != nil {
@@ -205,8 +238,11 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 		if err := os.WriteFile(cfg.TokenPath, data, 0600); err != nil {
 			return fmt.Errorf("failed to write token file: %w", err)
 		}
-		slog.Info("Token created and saved", "path", cfg.TokenPath)
-	} else {
+		slog.Info("Token saved to file", "path", cfg.TokenPath)
+	}
+
+	if cfg.K8sSecretName == "" && cfg.TokenPath == "" {
+		// Only display token if not saving to file or k8s secret
 		slog.Info("Token created successfully", "token", tokenResp.Token)
 	}
 

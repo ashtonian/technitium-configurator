@@ -173,10 +173,10 @@ type apiResp struct {
 }
 
 type CreateTokenResponse struct {
-	Username  string `json:"username"`
-	TokenName string `json:"tokenName"`
-	Token     string `json:"token"`
-	Status    string `json:"status"`
+	Username  string `json:"username,omitempty" yaml:"username,omitempty"`
+	TokenName string `json:"tokenName,omitempty" yaml:"tokenName,omitempty"`
+	Token     string `json:"token,omitempty" yaml:"token,omitempty"`
+	Status    string `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 // CreateToken creates a non-expiring API token for the specified user.

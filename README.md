@@ -69,16 +69,31 @@ DNS_NEW_PASSWORD         Required for change-password command
 DNS_TOKEN_PATH           Optional: Path to token file (default: token.yaml)
 DNS_CONFIG_PATH          Optional: Path to config file (default: config.yaml)
 DNS_TIMEOUT              Optional: Timeout for API calls (default: 30s)
+DNS_K8S_SECRET_NAME      Optional: Name of Kubernetes secret to store token in
+DNS_K8S_SECRET_NAMESPACE Optional: Namespace of Kubernetes secret (default: default)
+DNS_K8S_SECRET_KEY       Optional: Key in Kubernetes secret to store token (default: token)
 ```
 
 ### Basic Usage
 
 1. Create a token (using environment variables):
 ```bash
+# Store token in a file
 docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="your-password" \
+  -e DNS_TOKEN_PATH="/app/token.yaml" \
+  -v "$(pwd)/token.yaml:/app/token.yaml" \
+  ashtonian/technitium-configurator:latest create-token
+
+# Store token in a Kubernetes secret
+docker run --rm \
+  -e DNS_API_URL="http://your-dns-server:5380" \
+  -e DNS_USERNAME="admin" \
+  -e DNS_PASSWORD="your-password" \
+  -e DNS_K8S_SECRET_NAME="technitium-token" \
+  -e DNS_K8S_SECRET_NAMESPACE="default" \
   ashtonian/technitium-configurator:latest create-token
 ```
 
@@ -165,11 +180,17 @@ When re-running the configurator on existing zones:
 ### Token Management
 
 - Creates non-expiring tokens
-- Token can be:
-  - Saved to a file (if DNS_TOKEN_PATH is set)
-  - Displayed in logs only (if no token path provided)
-- Will not overwrite existing valid token if saving to file
-- Token must be manually deleted to create a new one when using file storage
+- Token can be stored in:
+  - A file (if DNS_TOKEN_PATH is set)
+  - A Kubernetes secret (if DNS_K8S_SECRET_NAME is set)
+  - Displayed in logs only (if no storage is configured)
+- Will not overwrite existing valid token if saving to file or secret
+- Token must be manually deleted to create a new one when using file or secret storage
+- When using Kubernetes secrets:
+  - Secret will be created if it doesn't exist
+  - Secret will be updated if it exists but doesn't contain a token
+  - Operation will fail if secret exists and contains a valid token
+  - Requires Kubernetes cluster access (in-cluster or kubeconfig)
 
 ## Building
 

@@ -19,14 +19,20 @@ type ClientConfig struct {
 	ConfigPath  string        `yaml:"-" env:"DNS_CONFIG_PATH"` // Not stored in YAML, set via flag or env
 	TokenPath   string        `yaml:"token_path" env:"DNS_TOKEN_PATH"`
 	Timeout     time.Duration `yaml:"timeout" env:"DNS_TIMEOUT"`
+	// Kubernetes secret configuration
+	K8sSecretName      string `yaml:"k8s_secret_name" env:"DNS_K8S_SECRET_NAME"`           // Name of the secret to store token in
+	K8sSecretNamespace string `yaml:"k8s_secret_namespace" env:"DNS_K8S_SECRET_NAMESPACE"` // Namespace of the secret (default: default)
+	K8sSecretKey       string `yaml:"k8s_secret_key" env:"DNS_K8S_SECRET_KEY"`             // Key in the secret to store token (default: token)
 }
 
 // DefaultConfig returns a new ClientConfig with default values
 func DefaultConfig() *ClientConfig {
 	return &ClientConfig{
-		ConfigPath: "config.yaml", // Default config file path
-		TokenPath:  "token.yaml",  // Default token file path
-		Timeout:    30 * time.Second,
+		ConfigPath:         "config.yaml", // Default config file path
+		TokenPath:          "",            // Default token file path
+		Timeout:            30 * time.Second,
+		K8sSecretNamespace: "default",   // Default namespace
+		K8sSecretKey:       "api-token", // Default secret key
 	}
 }
 
