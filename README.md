@@ -67,6 +67,8 @@ DNS_USERNAME             Required for create-token and change-password commands
 DNS_PASSWORD             Required for create-token and change-password commands
 DNS_NEW_PASSWORD         Required for change-password command
 DNS_TOKEN_PATH           Optional: Path to token file (default: token.yaml)
+DNS_CONFIG_PATH          Optional: Path to config file (default: config.yaml)
+DNS_TIMEOUT              Optional: Timeout for API calls (default: 30s)
 ```
 
 ### Basic Usage
@@ -85,8 +87,9 @@ docker run --rm \
 docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
   -e DNS_API_TOKEN="your-token" \
+  -e DNS_CONFIG_PATH="/app/config.yaml" \
   -v "$(pwd)/config.yaml:/app/config.yaml" \
-  ashtonian/technitium-configurator:latest configure config.yaml
+  ashtonian/technitium-configurator:latest configure
 ```
 
 3. Change password:
@@ -103,17 +106,17 @@ docker run --rm \
 
 You can mount your configuration files into the container:
 
-- `client.yaml`: Mount to `/app/client.yaml` for client configuration
 - `config.yaml`: Mount to `/app/config.yaml` for DNS server configuration
 - `token.yaml`: Mount to `/app/token.yaml` if using token file storage
 
 Example with all files:
 ```bash
 docker run --rm \
-  -v "$(pwd)/client.yaml:/app/client.yaml" \
+  -e DNS_CONFIG_PATH="/app/config.yaml" \
+  -e DNS_TOKEN_PATH="/app/token.yaml" \
   -v "$(pwd)/config.yaml:/app/config.yaml" \
   -v "$(pwd)/token.yaml:/app/token.yaml" \
-  ashtonian/technitium-configurator:latest configure config.yaml
+  ashtonian/technitium-configurator:latest configure
 ```
 
 ### Available Commands

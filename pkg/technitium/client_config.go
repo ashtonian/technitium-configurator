@@ -16,7 +16,7 @@ type ClientConfig struct {
 	Username    string        `yaml:"username" env:"DNS_USERNAME"`
 	Password    string        `yaml:"password" env:"DNS_PASSWORD"`
 	NewPassword string        `yaml:"new_password" env:"DNS_NEW_PASSWORD"`
-	ConfigPath  string        `yaml:"-"` // Not stored in YAML, set via flag
+	ConfigPath  string        `yaml:"-" env:"DNS_CONFIG_PATH"` // Not stored in YAML, set via flag or env
 	TokenPath   string        `yaml:"token_path" env:"DNS_TOKEN_PATH"`
 	Timeout     time.Duration `yaml:"timeout" env:"DNS_TIMEOUT"`
 }
@@ -24,8 +24,8 @@ type ClientConfig struct {
 // DefaultConfig returns a new ClientConfig with default values
 func DefaultConfig() *ClientConfig {
 	return &ClientConfig{
-		ConfigPath: "config.yaml",
-		TokenPath:  "token.yaml",
+		ConfigPath: "config.yaml", // Default config file path
+		TokenPath:  "token.yaml",  // Default token file path
 		Timeout:    30 * time.Second,
 	}
 }
@@ -68,6 +68,10 @@ func (c *ClientConfig) LoadFromEnv() error {
 				}
 				val.Field(i).Set(reflect.ValueOf(duration))
 			} else {
+				// Special handling for ConfigPath - only set if not already set by flag
+				if field.Name == "ConfigPath" && c.ConfigPath != "" && c.ConfigPath != "config.yaml" {
+					continue // Skip if already set by flag
+				}
 				val.Field(i).SetString(envVal)
 			}
 		}
