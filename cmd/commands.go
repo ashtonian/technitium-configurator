@@ -144,8 +144,10 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 		err = client.InstallApp(ctx, req)
 		if err != nil {
 			slog.Error("Failed to install app", "error", err, "app", app.Name)
+			err = nil // continue to config
 		}
 
+		slog.Info("Configuring app", "app", app.Name)
 		config, err := app.GetConfigJSON()
 		if err != nil {
 			slog.Error("Failed to get app config", "error", err, "app", app.Name)
@@ -161,6 +163,7 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 		if err != nil {
 			slog.Error("Failed to set app config", "error", err, "app", app.Name)
 		}
+		slog.Info("App configured", "app", app.Name)
 	}
 
 	slog.Info("Configuration complete!")
