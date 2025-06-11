@@ -20,8 +20,8 @@ PowerDNS was also considered however they are moving features to a commercial pl
 
 Currently supports:
 
-- Blocking (DNS blocking and filtering)
-- Forwarding (DNS forwarding and proxy)
+- Advanced Blocking (DNS blocking and filtering)
+- Advanced Forwarding (DNS forwarding and proxy)
 
 ### Adding New Apps
 
