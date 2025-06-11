@@ -13,6 +13,8 @@ data:
       useLocalTime: true
       maxLogFileDays: 7
       maxStatFileDays: 365
+      qpmLimitRequests: 0
+      qpmLimitErrors: 0
       enableDnsOverUdpProxy:  true
       enableDnsOverTcpProxy:  true
       enableDnsOverHttp:      true
@@ -30,14 +32,29 @@ data:
       serveStale:             true
       serveStaleTtl:          86400
       cacheNegativeRecordTtl: 60
+      tsigKeys:
+      - keyName: "external-dns"
+        algorithmName: "hmac-sha256"
+        sharedSecret: "somesecret"
     zones:
-      - zone:  "example.com"
+      - zone:  "somedomain.com"
         type:  "Forwarder"
         initializeForwarder: true
         protocol: "Udp"
         forwarder: "172.0.0.1"
         dnssecValidation: false
-      - zone:  "example2.com"
+        aclSettings:
+          queryAccess: AllowOnlyPrivateNetworks
+          zoneTransfer: UseSpecifiedNetworkACL
+          zoneTransferNetworkACL: ["172.0.0.0/8"]
+          zoneTransferTsigKeyNames: ["external-dns"]
+          update: "UseSpecifiedNetworkACL"
+          updateNetworkACL:
+            - "172.0.0.0/8"
+          updateSecurityPolicies: >
+            external-dns|*.somedomain.com|ANY
+            |external-dns|somedomain.com|ANY
+      - zone:  "someotherdomain.com"
         type:  "Forwarder"
         initializeForwarder: true
         protocol: "Https"
@@ -74,7 +91,6 @@ data:
                 - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-onlydomains.txt"
                 - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nosafesearch-onlydomains.txt"
                 - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/dyndns-onlydomains.txt"
-
       - name: "Advanced Forwarding"
         url:  "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v3.1.zip"
         config:
