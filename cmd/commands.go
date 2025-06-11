@@ -94,6 +94,9 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 			ProxyPort:                  z.ProxyPort,
 			ProxyUsername:              z.ProxyUsername,
 			ProxyPassword:              z.ProxyPassword,
+			Catalog:                    z.Catalog,
+			UseSoaSerialDateScheme:     z.UseSoaSerialDateScheme,
+			InitializeForwarder:        z.InitializeForwarder,
 		}
 
 		if _, err := client.CreateZone(ctx, zoneReq); err != nil {

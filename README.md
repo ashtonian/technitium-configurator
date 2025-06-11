@@ -1,10 +1,17 @@
 # Technitium Configurator
 
-A Go tool for configuring Technitium DNS Server in a declarative fashion, supporting both one-time setup and continuous configuration management (see limitations). Also supports updating user password, and creating/syncing a kube secret with an api token.
+A Go tool for configuring Technitium DNS Server in a declarative fashion, supporting both one-time setup and continuous configuration management (see limitations). Also supports updating user password, and creating/syncing a kube secret with an api token value.
+
+## Why
+
+DNS is *critical* and therefore its configuration should be easily repeatable. Technetium is one of the only open source, authoritative servers with a UI, that supports additional feature sets like dns sink hole, RFC2136 support (external-dns), split horizon ect... However its config files are currently stored in binary with complex versioning/logic, and there isn't a declarative solution. To address this, an over engineered configuration utility was born.
+
+PowerDNS was also considered however they are moving features to a commercial platform.
 
 ## Features
 
 - Create and manage API tokens
+- Update user passwords
 - Configure DNS server settings
 - Manage DNS zones and records
 - Install and configure apps
@@ -21,6 +28,7 @@ Currently supports:
 To add support for a new app:
 
 1. Add a new config struct in `pkg/technitium/`, struct needs json and yaml tags.
+    1. The `UnmarshalYAML` and field json/yaml struct tags should account for any default value handling the app is expecting.
 
 2. Add a case in the app configuration switch statement in `main.go`:
 
@@ -34,13 +42,12 @@ To add support for a new app:
 	}
 ```
 
-3. The `UnmarshalYAML` and struct tags should account for default value handling the app is expecting.
 
 ## Usage
 
-### Running with Docker
+### Running As container
 
-The configurator is available as a Docker image:
+The configurator is available as a container image:
 
 ```bash
 docker pull ashtonian/technitium-configurator:latest
@@ -94,7 +101,6 @@ k8s_secret_namespace: "default"
 k8s_secret_key: "api-token"
 ```
 
-
 ### Basic Usage
 
 1. Create a token (using environment variables):
@@ -129,6 +135,7 @@ docker run --rm \
 ```
 
 1. Change password:
+
 ```bash
 docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
@@ -146,6 +153,7 @@ You can mount your configuration files into the container:
 - `token.yaml`: Mount to `/app/token.yaml` if using token file storage
 
 Example with all files:
+
 ```bash
 docker run --rm \
   -e DNS_CONFIG_PATH="/app/config.yaml" \
@@ -234,6 +242,7 @@ The log level can be set via (in order of precedence):
 Note: The application starts with debug logging enabled to help diagnose initialization issues, then switches to the configured level after loading the configuration.
 
 Example setting log level:
+
 ```bash
 # Via command line flag (highest precedence)
 docker run --rm \
@@ -254,3 +263,10 @@ log_level: "debug"  # in config.yaml
 ```bash
 go build -o technitium-configurator
 ```
+
+## Wishlist TODO:
+
+* Better versioning/changelog
+* Integration/Unit tests :see_no_evil:
+* create/sync usernames + credentials
+* All the apps

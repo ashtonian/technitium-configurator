@@ -5,15 +5,17 @@ import (
 	"fmt"
 )
 
+type zone struct {
+	ZoneCreateRequest `yaml:",inline"`
+	ACLSettings       *ACLSettings `yaml:"aclSettings,omitempty"`
+}
+
 // Config represents the root configuration structure
 type Config struct {
-	DNSSettings DnsSettings `yaml:"dnsSettings"`
-	Zones       []struct {
-		ZoneCreateRequest `yaml:",inline"`
-		ACLSettings       *ACLSettings `yaml:"aclSettings,omitempty"`
-	} `yaml:"zones"`
-	Records []AddRecordRequest `yaml:"records"`
-	Apps    []AppConfig        `yaml:"apps"`
+	DNSSettings DnsSettings        `yaml:"dnsSettings"`
+	Zones       []zone             `yaml:"zones"`
+	Records     []AddRecordRequest `yaml:"records"`
+	Apps        []AppConfig        `yaml:"apps"`
 }
 
 // GetDNSSettingsResponse wraps the server reply.

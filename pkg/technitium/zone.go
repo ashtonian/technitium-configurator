@@ -140,9 +140,9 @@ type ZoneOptions struct {
 	Disabled                  bool     `json:"disabled"`
 	Catalog                   string   `json:"catalog,omitempty"`
 	ACLSettings               `json:",inline"`
-	AvailableCatalogZoneNames []string               `json:"availableCatalogZoneNames,omitempty"`
-	AvailableTsigKeyNames     []string               `json:"availableTsigKeyNames,omitempty"`
-	UpdateSecurityPolicies    []UpdateSecurityPolicy `json:"updateSecurityPolicies,omitempty"`
+	AvailableCatalogZoneNames []string `json:"availableCatalogZoneNames,omitempty"`
+	AvailableTsigKeyNames     []string `json:"availableTsigKeyNames,omitempty"`
+	UpdateSecurityPolicies    string   `json:"updateSecurityPolicies,omitempty"`
 }
 
 func (c *Client) GetZoneOptions(ctx context.Context, z ZoneOptionsFetch) (*ZoneOptions, error) {
