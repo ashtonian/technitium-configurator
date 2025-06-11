@@ -144,7 +144,6 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 		err = client.InstallApp(ctx, req)
 		if err != nil {
 			slog.Error("Failed to install app", "error", err, "app", app.Name)
-			continue
 		}
 
 		config, err := app.GetConfigJSON()
