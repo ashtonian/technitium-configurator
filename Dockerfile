@@ -12,26 +12,20 @@ RUN apk add --no-cache git
 COPY go.mod go.sum ./
 
 # Download dependencies
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go mod download
+RUN go mod download
 
 # Copy source code
 COPY . .
 
 # Build the application
-ARG GO_BUILD_FLAGS
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -ldflags="-s -w" -o technitium-configurator
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -ldflags="-s -w" -o technitium-configurator
 
 # Final stage
 FROM --platform=$TARGETPLATFORM alpine:latest
 
 WORKDIR /app
 
-# Copy the binary and config
+# Copy the binary
 COPY --from=builder /app/technitium-configurator /app/
-COPY --from=builder /app/config.yaml /app/
 
 ENTRYPOINT ["/app/technitium-configurator"]
