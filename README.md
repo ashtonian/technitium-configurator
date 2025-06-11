@@ -84,7 +84,7 @@ DNS_K8S_SECRET_NAMESPACE Optional: Namespace of Kubernetes secret (default: defa
 DNS_K8S_SECRET_KEY       Optional: Key in Kubernetes secret to store token (default: api-token)
 ```
 
-### Configuration File
+### Configurator Configuration File
 
 The configurator can also be configured using a YAML file. Here's an example configuration:
 
@@ -174,6 +174,127 @@ change-password           Change the password for the current user
 ### Examples
 
 See `examples` folder for `docker-compose.yaml` and `k8s.yaml`, as well as a configuration example `config.yaml`.
+
+#### Example Technitium Config File:
+
+```yaml
+    dnsSettings:
+      dnsServerDomain: "technitium.somedomain.com"
+      recursion: Deny
+      logQueries: false
+      loggingType: FileAndConsole
+      useLocalTime: true
+      maxLogFileDays: 7
+      maxStatFileDays: 365
+      qpmLimitRequests: 0
+      qpmLimitErrors: 0
+      enableDnsOverUdpProxy:  true
+      enableDnsOverTcpProxy:  true
+      enableDnsOverHttp:      true
+      enableDnsOverTls:       true
+      enableDnsOverHttps:     true
+      enableDnsOverHttp3:     true
+      enableDnsOverQuic:      true
+      udpPayloadSize:         1232
+      resolverConcurrency:    4
+      forwarderConcurrency:   10
+      forwarderTimeout:       2000
+      forwarderRetries:       2
+      concurrentForwarding:   true
+      cacheMaximumEntries:    0
+      serveStale:             true
+      serveStaleTtl:          86400
+      cacheNegativeRecordTtl: 60
+      tsigKeys:
+      - keyName: "external-dns"
+        algorithmName: "hmac-sha256"
+        sharedSecret: "somesecret"
+    zones:
+      - zone:  "somedomain.com"
+        type:  "Forwarder"
+        initializeForwarder: true
+        protocol: "Udp"
+        forwarder: "172.0.0.1"
+        dnssecValidation: false
+        aclSettings:
+          queryAccess: AllowOnlyPrivateNetworks
+          zoneTransfer: UseSpecifiedNetworkACL
+          zoneTransferNetworkACL: ["172.0.0.0/8"]
+          zoneTransferTsigKeyNames: ["external-dns"]
+          update: "UseSpecifiedNetworkACL"
+          updateNetworkACL:
+            - "172.0.0.0/8"
+          updateSecurityPolicies: >
+            external-dns|*.somedomain.com|ANY
+            |external-dns|somedomain.com|ANY
+      - zone:  "someotherdomain.com"
+        type:  "Forwarder"
+        initializeForwarder: true
+        protocol: "Https"
+        forwarder: "https://cloudflare-dns.com/dns-query"
+        dnssecValidation: true
+    records: [ ]
+    apps:
+      - name: "Advanced Blocking"
+        url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v8.zip"
+        config:
+          enableBlocking: true
+          blockListUrlUpdateIntervalHours: 24
+          networkGroupMap:
+            "0.0.0.0/0":      "home"
+            "::/0":           "home"
+          groups:
+            - name: home
+              enableBlocking: true
+              allowTxtBlockingReport: true
+              blockAsNxDomain: true
+              blockingAddresses: [ "0.0.0.0", "::" ]
+              allowed: []
+              blocked: []
+              allowListUrls: []
+              allowedRegex: []
+              blockedRegex: []
+              regexAllowListUrls: []
+              regexBlockListUrls: []
+              adblockListUrls: []
+              blockListUrls:
+                - "https://raw.githubusercontent.com/xRuffKez/NRD/refs/heads/main/lists/14-day/wildcard/nrd-14day_wildcard.txt"
+                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt"
+                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt"
+                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-onlydomains.txt"
+                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nosafesearch-onlydomains.txt"
+                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/dyndns-onlydomains.txt"
+      - name: "Advanced Forwarding"
+        url:  "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v3.1.zip"
+        config:
+          enableForwarding: true
+          forwarders:
+            - name: "opendns"
+              dnssecValidation: true
+              forwarderProtocol: "Https"
+              forwarderAddresses:
+                - "https://doh.opendns.com/dns-query"
+            - name: "cloudflare"
+              dnssecValidation: true
+              forwarderProtocol: "Tls"
+              forwarderAddresses:
+                - "tls://1.1.1.1"
+                - "tls://1.0.0.1"
+            - name: "quad9"
+              dnssecValidation: true
+              forwarderProtocol: "Https"
+              forwarderAddresses:
+                - "https://dns.quad9.net/dns-query"
+          networkGroupMap:
+            "0.0.0.0/0": "default"
+            "::/0":      "default"
+          groups:
+            - name: "default"
+              enableForwarding: true
+              forwardings:
+                - forwarders: ["opendns", "cloudflare", "quad9"]
+                  domains: ["*"]
+```
 
 ### Building
 
