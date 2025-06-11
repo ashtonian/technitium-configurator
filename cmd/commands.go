@@ -98,7 +98,7 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 
 		if _, err := client.CreateZone(ctx, zoneReq); err != nil {
 			slog.Error("Failed to create zone", "zone", z.Zone, "error", err)
-			continue
+			err = nil // continue to update options
 		}
 
 		opts := technitium.ZoneOptionsUpdate{
