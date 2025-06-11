@@ -206,11 +206,11 @@ func (c *Client) CreateToken(ctx context.Context, username, password, tokenName 
 }
 
 type LoginResponse struct {
-	DisplayName string          `json:"displayName"`
-	Username    string          `json:"username"`
-	Token       string          `json:"token"`
-	Info        json.RawMessage `json:"info,omitempty"`
-	Status      string          `json:"status"`
+	DisplayName string          `json:"displayName,omitempty"`
+	Username    string          `json:"username,omitempty"`
+	Token       string          `json:"token,omitempty"`
+	Info        json.RawMessage `json,omitempty:"info,omitempty,omitempty"`
+	Status      string          `json:"status,omitempty"`
 }
 
 // Login authenticates with the server and returns a session token.
@@ -227,17 +227,28 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 	}{
 		User:        username,
 		Pass:        password,
-		IncludeInfo: true,
+		IncludeInfo: false,
 	}
 
-	resp, err := c.callGET(ctx, "/api/user/login", params)
+	qs, err := query.Values(params)
 	if err != nil {
-		return nil, fmt.Errorf("login failed: %w", err)
+		return nil, err
 	}
+	path := "/api/user/login"
+	u := fmt.Sprintf("%s?%s", c.normalizePath(path), qs.Encode())
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
 	var loginResp LoginResponse
-	if err := json.Unmarshal(resp.Response, &loginResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal login response: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
+		return nil, err
 	}
 
 	// Update the client's token on successful login
