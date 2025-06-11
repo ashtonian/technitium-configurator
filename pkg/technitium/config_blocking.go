@@ -16,6 +16,40 @@ type BlockingConfig struct {
 	Groups                          []BlockingGroup   `yaml:"groups"                   json:"groups"`
 }
 
+func (c *BlockingConfig) SetDefaults() {
+	if c.LocalEndPointGroupMap == nil {
+		c.LocalEndPointGroupMap = make(map[string]string)
+	}
+	if c.NetworkGroupMap == nil {
+		c.NetworkGroupMap = make(map[string]string)
+	}
+	if c.Groups == nil {
+		c.Groups = []BlockingGroup{}
+	}
+}
+
+func (c *BlockingConfig) UnmarshalYAML(node *yaml.Node) error {
+	type raw BlockingConfig
+	var tmp raw
+	if err := node.Decode(&tmp); err != nil {
+		return err
+	}
+	*c = BlockingConfig(tmp)
+	c.SetDefaults()
+	return nil
+}
+
+func (g *BlockingGroup) UnmarshalYAML(node *yaml.Node) error {
+	type raw BlockingGroup
+	var tmp raw
+	if err := node.Decode(&tmp); err != nil {
+		return err
+	}
+	*g = BlockingGroup(tmp)
+	g.SetDefaults()
+	return nil
+}
+
 // BlockingGroup represents a single blocking group section.
 type BlockingGroup struct {
 	Name                   string    `yaml:"name"                   json:"name"`
@@ -32,6 +66,39 @@ type BlockingGroup struct {
 	RegexAllowListUrls     []string  `yaml:"regexAllowListUrls" json:"regexAllowListUrls"`
 	RegexBlockListUrls     []ListURL `yaml:"regexBlockListUrls" json:"regexBlockListUrls"`
 	AdblockListUrls        []ListURL `yaml:"adblockListUrls"    json:"adblockListUrls"`
+}
+
+func (g *BlockingGroup) SetDefaults() {
+	if g.BlockingAddresses == nil {
+		g.BlockingAddresses = []string{}
+	}
+	if g.Allowed == nil {
+		g.Allowed = []string{}
+	}
+	if g.Blocked == nil {
+		g.Blocked = []string{}
+	}
+	if g.AllowListUrls == nil {
+		g.AllowListUrls = []string{}
+	}
+	if g.BlockListUrls == nil {
+		g.BlockListUrls = []ListURL{}
+	}
+	if g.AllowedRegex == nil {
+		g.AllowedRegex = []string{}
+	}
+	if g.BlockedRegex == nil {
+		g.BlockedRegex = []string{}
+	}
+	if g.RegexAllowListUrls == nil {
+		g.RegexAllowListUrls = []string{}
+	}
+	if g.RegexBlockListUrls == nil {
+		g.RegexBlockListUrls = []ListURL{}
+	}
+	if g.AdblockListUrls == nil {
+		g.AdblockListUrls = []ListURL{}
+	}
 }
 
 // Raw object form (exact field names taken from Technitium source).
