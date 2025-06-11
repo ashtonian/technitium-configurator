@@ -2,11 +2,23 @@ package technitium
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+)
+
+// LogLevel represents the logging level
+type LogLevel string
+
+const (
+	LogLevelDebug LogLevel = "debug"
+	LogLevelInfo  LogLevel = "info"
+	LogLevelWarn  LogLevel = "warn"
+	LogLevelError LogLevel = "error"
 )
 
 // ClientConfig represents the client configuration structure
@@ -19,6 +31,7 @@ type ClientConfig struct {
 	ConfigPath  string        `yaml:"-" env:"DNS_CONFIG_PATH"` // Not stored in YAML, set via flag or env
 	TokenPath   string        `yaml:"token_path" env:"DNS_TOKEN_PATH"`
 	Timeout     time.Duration `yaml:"timeout" env:"DNS_TIMEOUT"`
+	LogLevel    LogLevel      `yaml:"log_level" env:"DNS_LOG_LEVEL"`
 	// Kubernetes secret configuration
 	K8sSecretName      string `yaml:"k8s_secret_name" env:"DNS_K8S_SECRET_NAME"`           // Name of the secret to store token in
 	K8sSecretNamespace string `yaml:"k8s_secret_namespace" env:"DNS_K8S_SECRET_NAMESPACE"` // Namespace of the secret (default: default)
@@ -31,8 +44,25 @@ func DefaultConfig() *ClientConfig {
 		ConfigPath:         "config.yaml", // Default config file path
 		TokenPath:          "",            // Default token file path
 		Timeout:            30 * time.Second,
-		K8sSecretNamespace: "default",   // Default namespace
-		K8sSecretKey:       "api-token", // Default secret key
+		LogLevel:           LogLevelInfo, // Default log level
+		K8sSecretNamespace: "default",    // Default namespace
+		K8sSecretKey:       "api-token",  // Default secret key
+	}
+}
+
+// GetLogLevel returns the slog.Level corresponding to the configured LogLevel
+func (c *ClientConfig) GetLogLevel() slog.Level {
+	switch strings.ToLower(string(c.LogLevel)) {
+	case string(LogLevelDebug):
+		return slog.LevelDebug
+	case string(LogLevelInfo):
+		return slog.LevelInfo
+	case string(LogLevelWarn):
+		return slog.LevelWarn
+	case string(LogLevelError):
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }
 
@@ -111,4 +141,23 @@ func (c *ClientConfig) Validate(command string) error {
 	}
 
 	return nil
+}
+
+// LoadConfig loads the configuration from environment variables and config file
+func LoadConfig() (*ClientConfig, error) {
+	cfg := DefaultConfig()
+
+	// Load from environment variables first
+	if err := cfg.LoadFromEnv(); err != nil {
+		return nil, fmt.Errorf("failed to load config from environment: %w", err)
+	}
+
+	// If config path is set, try to load from file
+	if cfg.ConfigPath != "" {
+		if err := cfg.LoadFromFile(cfg.ConfigPath); err != nil {
+			return nil, fmt.Errorf("failed to load config from file: %w", err)
+		}
+	}
+
+	return cfg, nil
 }

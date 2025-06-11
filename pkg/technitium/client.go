@@ -192,14 +192,26 @@ func (c *Client) CreateToken(ctx context.Context, username, password, tokenName 
 		TokenName: tokenName,
 	}
 
-	resp, err := c.callGET(ctx, "/api/user/createToken", params)
+	qs, err := query.Values(params)
 	if err != nil {
 		return nil, err
 	}
 
+	path := "/api/user/createToken"
+	u := fmt.Sprintf("%s?%s", c.normalizePath(path), qs.Encode())
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
 	var tokenResp CreateTokenResponse
-	if err := json.Unmarshal(resp.Response, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal token response: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return nil, err
 	}
 
 	return &tokenResp, nil

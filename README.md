@@ -1,6 +1,6 @@
 # Technitium Configurator
 
-A Go tool for configuring Technitium DNS Server, supporting both one-time setup and continuous configuration management (see limitations).
+A Go tool for configuring Technitium DNS Server in a declarative fashion, supporting both one-time setup and continuous configuration management (see limitations). Also supports updating user password, and creating/syncing a kube secret with an api token.
 
 ## Features
 
@@ -33,6 +33,8 @@ To add support for a new app:
     ...
 	}
 ```
+
+3. The `UnmarshalYAML` and struct tags should account for default value handling the app is expecting.
 
 ## Usage
 
@@ -69,10 +71,29 @@ DNS_NEW_PASSWORD         Required for change-password command
 DNS_TOKEN_PATH           Optional: Path to token file (default: token.yaml)
 DNS_CONFIG_PATH          Optional: Path to config file (default: config.yaml)
 DNS_TIMEOUT              Optional: Timeout for API calls (default: 30s)
+DNS_LOG_LEVEL            Optional: Logging level (debug, info, warn, error) (default: info)
 DNS_K8S_SECRET_NAME      Optional: Name of Kubernetes secret to store token in
 DNS_K8S_SECRET_NAMESPACE Optional: Namespace of Kubernetes secret (default: default)
-DNS_K8S_SECRET_KEY       Optional: Key in Kubernetes secret to store token (default: token)
+DNS_K8S_SECRET_KEY       Optional: Key in Kubernetes secret to store token (default: api-token)
 ```
+
+### Configuration File
+
+The configurator can also be configured using a YAML file. Here's an example configuration:
+
+```yaml
+api_url: "http://dns-server:5380"
+api_token: "your-token"
+username: "admin"
+password: "your-password"
+token_path: "/app/token.yaml"
+timeout: 30s
+log_level: "info"  # debug, info, warn, or error
+k8s_secret_name: "technitium-token"
+k8s_secret_namespace: "default"
+k8s_secret_key: "api-token"
+```
+
 
 ### Basic Usage
 
@@ -97,7 +118,7 @@ docker run --rm \
   ashtonian/technitium-configurator:latest create-token
 ```
 
-2. Configure DNS server (using environment variables):
+1. Configure DNS server (using environment variables):
 ```bash
 docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
@@ -107,7 +128,7 @@ docker run --rm \
   ashtonian/technitium-configurator:latest configure
 ```
 
-3. Change password:
+1. Change password:
 ```bash
 docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
@@ -191,6 +212,42 @@ When re-running the configurator on existing zones:
   - Secret will be updated if it exists but doesn't contain a token
   - Operation will fail if secret exists and contains a valid token
   - Requires Kubernetes cluster access (in-cluster or kubeconfig)
+
+### Logging
+
+The configurator uses structured logging with the following levels:
+
+- `debug`: Detailed information for debugging, including sensitive data like API tokens and passwords
+- `info`: General operational information (default)
+- `warn`: Warning messages for potentially harmful situations
+- `error`: Error messages for serious problems
+
+> **Warning**: Debug logging will include sensitive information such as API tokens and passwords. Use with caution in production environments.
+
+The log level can be set via (in order of precedence):
+
+1. Command line flag: `--log-level` (overrides all other settings)
+2. Environment variable: `DNS_LOG_LEVEL`
+3. Configuration file: `log_level` field
+4. Default: `info` if not specified
+
+Note: The application starts with debug logging enabled to help diagnose initialization issues, then switches to the configured level after loading the configuration.
+
+Example setting log level:
+```bash
+# Via command line flag (highest precedence)
+docker run --rm \
+  --log-level debug \
+  ashtonian/technitium-configurator:latest configure
+
+# Via environment variable
+docker run --rm \
+  -e DNS_LOG_LEVEL="debug" \
+  ashtonian/technitium-configurator:latest configure
+
+# Via config file
+log_level: "debug"  # in config.yaml
+```
 
 ## Building
 
