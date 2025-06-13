@@ -1,6 +1,6 @@
 # Technitium Configurator
 
-A Go tool for configuring Technitium DNS Server in a declarative fashion, supporting both one-time setup and continuous configuration management (see limitations). Also supports updating user password, and creating/syncing a kube secret with an api token value.
+A Go tool for configuring [Technitium DNS](https://technitium.com/dns/) Server in a declarative fashion, supporting both one-time setup and continuous configuration management (see limitations). Also supports updating user password, and creating/syncing a kube secret with an api token value.
 
 ## Why
 
