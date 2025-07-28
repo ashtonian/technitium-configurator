@@ -6,8 +6,6 @@ A Go tool for configuring [Technitium DNS](https://technitium.com/dns/) Server i
 
 DNS is *critical* and therefore its configuration should be easily repeatable. Technetium is one of the only open source, authoritative servers with a UI, that supports additional feature sets like dns sink hole, RFC2136 support (external-dns), split horizon ect... However its config files are currently stored in binary with complex versioning/logic, and there isn't a declarative solution. To address this, an over engineered configuration utility was born.
 
-PowerDNS was also considered however they are moving features to a commercial platform.
-
 ## Features
 
 - Create and manage API tokens
