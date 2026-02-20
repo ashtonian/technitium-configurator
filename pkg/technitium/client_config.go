@@ -143,21 +143,3 @@ func (c *ClientConfig) Validate(command string) error {
 	return nil
 }
 
-// LoadConfig loads the configuration from environment variables and config file
-func LoadConfig() (*ClientConfig, error) {
-	cfg := DefaultConfig()
-
-	// Load from environment variables first
-	if err := cfg.LoadFromEnv(); err != nil {
-		return nil, fmt.Errorf("failed to load config from environment: %w", err)
-	}
-
-	// If config path is set, try to load from file
-	if cfg.ConfigPath != "" {
-		if err := cfg.LoadFromFile(cfg.ConfigPath); err != nil {
-			return nil, fmt.Errorf("failed to load config from file: %w", err)
-		}
-	}
-
-	return cfg, nil
-}

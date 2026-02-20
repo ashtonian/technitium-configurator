@@ -101,7 +101,9 @@ func (c *Client) callPOST(ctx context.Context, path string, body any) (*apiResp,
 	defer cancel()
 
 	p := url.Values{}
-	p.Set("token", c.Token)
+	if c.Token != "" {
+		p.Set("token", c.Token)
+	}
 	var b bytes.Buffer
 	if body != nil {
 		if err := json.NewEncoder(&b).Encode(body); err != nil {
@@ -124,8 +126,13 @@ func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiRes
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	qs, _ := query.Values(in)
-	qs.Set("token", c.Token)
+	qs, err := query.Values(in)
+	if err != nil {
+		return nil, err
+	}
+	if c.Token != "" {
+		qs.Set("token", c.Token)
+	}
 
 	url := c.normalizePath(path)
 	req, err := http.NewRequestWithContext(
@@ -182,6 +189,9 @@ type CreateTokenResponse struct {
 // CreateToken creates a non-expiring API token for the specified user.
 // The token will have the same privileges as the user account.
 func (c *Client) CreateToken(ctx context.Context, username, password, tokenName string) (*CreateTokenResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
 	params := struct {
 		User      string `url:"user"`
 		Pass      string `url:"pass"`
@@ -209,9 +219,17 @@ func (c *Client) CreateToken(ctx context.Context, username, password, tokenName 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
 	var tokenResp CreateTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
 		return nil, err
+	}
+
+	if tokenResp.Status != "ok" {
+		return nil, fmt.Errorf("create token: %s", tokenResp.Status)
 	}
 
 	return &tokenResp, nil
@@ -221,14 +239,13 @@ type LoginResponse struct {
 	DisplayName string          `json:"displayName,omitempty"`
 	Username    string          `json:"username,omitempty"`
 	Token       string          `json:"token,omitempty"`
-	Info        json.RawMessage `json,omitempty:"info,omitempty,omitempty"`
+	Info        json.RawMessage `json:"info,omitempty"`
 	Status      string          `json:"status,omitempty"`
 }
 
 // Login authenticates with the server and returns a session token.
 // On successful login, the client's token is automatically updated.
 func (c *Client) Login(ctx context.Context, username, password string) (*LoginResponse, error) {
-	// Create a new context with timeout
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -258,9 +275,17 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
 	var loginResp LoginResponse
 	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
 		return nil, err
+	}
+
+	if loginResp.Status != "ok" {
+		return nil, fmt.Errorf("login: %s", loginResp.Status)
 	}
 
 	// Update the client's token on successful login

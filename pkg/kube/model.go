@@ -109,11 +109,30 @@ func (k *K8sClient) CreateOrUpdateSecret(ctx context.Context, ns, name, key, val
 			Type:       corev1.SecretTypeOpaque,
 			StringData: map[string]string{key: value},
 		}
-		if _, cErr := k.clientset.CoreV1().Secrets(ns).Create(ctx, sec, metav1.CreateOptions{}); cErr != nil {
-			return fmt.Errorf("create secret %s/%s: %w", ns, name, cErr)
+		_, cErr := k.clientset.CoreV1().Secrets(ns).Create(ctx, sec, metav1.CreateOptions{})
+		if cErr == nil {
+			slog.Info("created secret", "namespace", ns, "name", name)
+			return nil
 		}
-		slog.Info("created secret", "namespace", ns, "name", name)
-		return nil
+		if errors.IsAlreadyExists(cErr) {
+			// Race: secret was created between our Get and Create; fall through to update.
+			return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				cur, gErr := k.GetSecret(ctx, ns, name)
+				if gErr != nil {
+					return gErr
+				}
+				if cur.Data == nil {
+					cur.Data = map[string][]byte{}
+				}
+				cur.Data[key] = []byte(value)
+				_, uErr := k.clientset.CoreV1().Secrets(ns).Update(ctx, cur, metav1.UpdateOptions{})
+				if uErr == nil {
+					slog.Info("updated secret", "namespace", ns, "name", name)
+				}
+				return uErr
+			})
+		}
+		return fmt.Errorf("create secret %s/%s: %w", ns, name, cErr)
 
 	default:
 		return fmt.Errorf("get secret %s/%s: %w", ns, name, err)

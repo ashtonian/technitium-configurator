@@ -245,7 +245,7 @@ type AddRecordResponse struct {
 }
 
 func (c *Client) AddRecord(ctx context.Context, req AddRecordRequest) (*AddRecordResponse, error) {
-	r, err := c.callPOSTForm(ctx, "api/zones/records/add", req)
+	r, err := c.callPOSTForm(ctx, "/api/zones/records/add", req)
 	if err != nil {
 		return nil, err
 	}

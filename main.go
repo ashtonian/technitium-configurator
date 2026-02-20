@@ -33,7 +33,7 @@ func main() {
 	// Set up usage message
 	root.Usage = func() {
 		fmt.Fprintf(root.Output(),
-			"Usage: %s [options] <command> [command-options]\n\nOptions:\n", os.Args[0])
+			"Usage: %s <command> [options]\n\nOptions:\n", os.Args[0])
 		root.PrintDefaults()
 		fmt.Fprintf(root.Output(), "\nCommands:\n")
 		for name, cmd := range cmd.Commands {
@@ -73,7 +73,7 @@ func main() {
 
 	// Load from file if it exists
 	if err := cfg.LoadFromFile(cfg.ConfigPath); err != nil {
-		slog.Debug("Failed to load config from file", "error", err, "path", cfg.ConfigPath)
+		slog.Warn("Failed to load config from file", "error", err, "path", cfg.ConfigPath)
 	}
 
 	// Load from environment (overrides file)

@@ -105,7 +105,8 @@ func (t *LoggedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// grab copies up to n bytes from rc, returns (data, replacement, readErrNonEOF).
+// grab reads the full body from rc and returns (logData, replacement, readErrNonEOF).
+// logData is truncated to n bytes when n > 0; the replacement always contains the full body.
 func grab(rc io.ReadCloser, n int) ([]byte, io.ReadCloser, error) {
 	if rc == nil {
 		return nil, rc, nil
@@ -113,18 +114,18 @@ func grab(rc io.ReadCloser, n int) ([]byte, io.ReadCloser, error) {
 	defer rc.Close()
 
 	var buf bytes.Buffer
-	var err error
-	if n <= 0 {
-		_, err = io.Copy(&buf, rc)
-	} else {
-		_, err = io.CopyN(&buf, rc, int64(n))
-		_, _ = io.Copy(io.Discard, rc) // drain rest
-	}
+	_, err := io.Copy(&buf, rc)
 	if err != nil && err != io.EOF {
 		return nil, nil, err
 	}
 
-	return buf.Bytes(), io.NopCloser(bytes.NewReader(buf.Bytes())), nil
+	data := buf.Bytes()
+	logData := data
+	if n > 0 && len(data) > n {
+		logData = data[:n]
+	}
+
+	return logData, io.NopCloser(bytes.NewReader(data)), nil
 }
 
 // asValue decides how to represent the body in logs.

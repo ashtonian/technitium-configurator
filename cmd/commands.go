@@ -101,7 +101,6 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 
 		if _, err := client.CreateZone(ctx, zoneReq); err != nil {
 			slog.Error("Failed to create zone", "zone", z.Zone, "error", err)
-			err = nil // continue to update options
 		}
 
 		opts := technitium.ZoneOptionsUpdate{
@@ -145,10 +144,8 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 			Name: app.Name,
 			Url:  app.Url,
 		}
-		err = client.InstallApp(ctx, req)
-		if err != nil {
+		if err := client.InstallApp(ctx, req); err != nil {
 			slog.Error("Failed to install app", "error", err, "app", app.Name)
-			err = nil // continue to config
 		}
 
 		slog.Info("Configuring app", "app", app.Name)
@@ -163,11 +160,11 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 			Config: config,
 		}
 
-		_, err = client.SetAppConfig(ctx, reqConfig)
-		if err != nil {
+		if _, err := client.SetAppConfig(ctx, reqConfig); err != nil {
 			slog.Error("Failed to set app config", "error", err, "app", app.Name)
+		} else {
+			slog.Info("App configured", "app", app.Name)
 		}
-		slog.Info("App configured", "app", app.Name)
 	}
 
 	slog.Info("Configuration complete!")
@@ -188,7 +185,7 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 		if err != nil {
 			slog.Warn("Failed to check k8s secret", "error", err, "secret", cfg.K8sSecretName)
 		} else if existingToken != "" {
-			slog.Warn("to	ken already exists in k8s secret", "secret", fmt.Sprintf("%s/%s", cfg.K8sSecretNamespace, cfg.K8sSecretName))
+			slog.Warn("token already exists in k8s secret", "secret", fmt.Sprintf("%s/%s", cfg.K8sSecretNamespace, cfg.K8sSecretName))
 			return nil
 		}
 	}
@@ -245,8 +242,7 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 	}
 
 	if cfg.K8sSecretName == "" && cfg.TokenPath == "" {
-		// Only display token if not saving to file or k8s secret
-		slog.Info("Token created successfully", "token", tokenResp.Token)
+		slog.Info("Token created successfully (not saved to file or k8s secret)")
 	}
 
 	return nil
