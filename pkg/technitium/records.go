@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type RecordType string
@@ -186,6 +188,37 @@ type AddRecordRequest struct {
 
 	/* ---------- Unknown / opaque ---------- */
 	RData string `url:"rdata,omitempty" json:"rdata,omitempty" yaml:"rdata,omitempty"`
+}
+
+// UnmarshalYAML supports "name" as an alias for "domain" and "value" as an
+// alias for "ipAddress" (for A/AAAA records) so configs can use the more
+// intuitive field names.
+func (r *AddRecordRequest) UnmarshalYAML(node *yaml.Node) error {
+	type raw AddRecordRequest
+	var tmp raw
+	if err := node.Decode(&tmp); err != nil {
+		return err
+	}
+	*r = AddRecordRequest(tmp)
+
+	// Decode again into a map to pick up alias fields
+	var m map[string]interface{}
+	if err := node.Decode(&m); err != nil {
+		return err
+	}
+
+	if r.Domain == "" {
+		if name, ok := m["name"].(string); ok {
+			r.Domain = name
+		}
+	}
+	if r.IPAddress == "" {
+		if val, ok := m["value"].(string); ok && (r.Type == RT_A || r.Type == RT_AAAA) {
+			r.IPAddress = val
+		}
+	}
+
+	return nil
 }
 
 type ZoneSummary struct {

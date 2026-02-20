@@ -256,7 +256,7 @@ func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args [
 	client := technitium.NewClient(cfg)
 
 	if err := client.ChangePassword(ctx, cfg.NewPassword); err != nil {
-		slog.Error("failed to change password", "err", err.Error())
+		return fmt.Errorf("failed to change password: %w", err)
 	}
 
 	slog.Info("Password changed successfully")
