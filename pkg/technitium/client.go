@@ -194,18 +194,23 @@ func parse(resp *http.Response) (*apiResp, error) {
 		return nil, err
 	}
 	if r.Status != "ok" {
-		if r.Message == "" {
-			r.Message = r.Status // fallback to status if no message
+		msg := r.ErrorMessage
+		if msg == "" {
+			msg = r.Message
 		}
-		return nil, errors.New(r.Message)
+		if msg == "" {
+			msg = r.Status
+		}
+		return nil, errors.New(msg)
 	}
 	return &r, nil
 }
 
 type apiResp struct {
-	Status   string          `json:"status"`
-	Message  string          `json:"message,omitempty"`
-	Response json.RawMessage `json:"response,omitempty"`
+	Status       string          `json:"status"`
+	Message      string          `json:"message,omitempty"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
+	Response     json.RawMessage `json:"response,omitempty"`
 }
 
 type CreateTokenResponse struct {

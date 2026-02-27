@@ -2,11 +2,7 @@ package technitium
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/url"
-	"reflect"
-	"strings"
 )
 
 type zone struct {
@@ -172,70 +168,10 @@ type DnsSettings struct {
 }
 
 func (c *Client) SetDNSSettings(ctx context.Context, opts DnsSettings) error {
-	vals, err := structToFormValues(opts)
-	if err != nil {
-		return fmt.Errorf("build form values: %w", err)
-	}
-	_, err = c.callPOSTFormRaw(ctx, "/api/settings/set", vals)
+	_, err := c.callPOST(ctx, "/api/settings/set", opts)
 	if err != nil {
 		return fmt.Errorf("set DNS settings: %w", err)
 	}
 
 	return nil
-}
-
-// structToFormValues converts a struct to url.Values using JSON tag names.
-// Primitive types are converted to strings; slices/structs are JSON-encoded.
-// Fields with omitempty that have zero values are skipped.
-func structToFormValues(v any) (url.Values, error) {
-	vals := url.Values{}
-	rv := reflect.ValueOf(v)
-	rt := rv.Type()
-
-	for i := 0; i < rt.NumField(); i++ {
-		field := rt.Field(i)
-		fv := rv.Field(i)
-
-		tag := field.Tag.Get("json")
-		if tag == "" || tag == "-" {
-			continue
-		}
-
-		name, opts := parseTag(tag)
-		if name == "" {
-			continue
-		}
-
-		omitempty := strings.Contains(opts, "omitempty")
-		if omitempty && fv.IsZero() {
-			continue
-		}
-
-		switch fv.Kind() {
-		case reflect.String:
-			vals.Set(name, fv.String())
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			vals.Set(name, fmt.Sprintf("%d", fv.Int()))
-		case reflect.Bool:
-			vals.Set(name, fmt.Sprintf("%t", fv.Bool()))
-		case reflect.Slice, reflect.Map, reflect.Struct:
-			b, err := json.Marshal(fv.Interface())
-			if err != nil {
-				return nil, fmt.Errorf("marshal field %s: %w", name, err)
-			}
-			vals.Set(name, string(b))
-		default:
-			vals.Set(name, fmt.Sprint(fv.Interface()))
-		}
-	}
-
-	return vals, nil
-}
-
-func parseTag(tag string) (string, string) {
-	parts := strings.SplitN(tag, ",", 2)
-	if len(parts) == 1 {
-		return parts[0], ""
-	}
-	return parts[0], parts[1]
 }

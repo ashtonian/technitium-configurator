@@ -2,11 +2,6 @@ name: Build, Push & Release
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to build (leave empty for automatic versioning)'
-        required: false
-        type: string
   push:
     branches: [ main ]
     tags: [ 'v*' ]
@@ -27,8 +22,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -49,43 +42,13 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value={{date 'YYYYMMDD'}}-{{sha}},enable={{is_default_branch}}
-
-      - name: Calculate version
-        id: version
-        run: |
-          if [[ -n "${{ github.event.inputs.version }}" ]]; then
-            # Use manually specified version
-            VERSION="${{ github.event.inputs.version }}"
-          elif [[ $GITHUB_REF == refs/tags/* ]]; then
-            # If this is a tag, use the tag version
-            VERSION=${GITHUB_REF#refs/tags/}
-            VERSION=${VERSION#v}
-          else
-            # Try to get the latest tag, if none exists, start from v0.0.0
-            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-            LATEST_TAG=${LATEST_TAG#v}
-
-            # Get the commit count from the beginning of the repository
-            # This ensures we always have a valid number even with no tags
-            COMMITS_SINCE_TAG=$(git rev-list --count HEAD)
-
-            # Split version into major and minor
-            MAJOR=$(echo $LATEST_TAG | cut -d. -f1)
-            MINOR=$(echo $LATEST_TAG | cut -d. -f2)
-
-            # If we couldn't parse the version properly, default to 0.0
-            if [[ -z "$MAJOR" ]] || [[ -z "$MINOR" ]]; then
-              MAJOR=0
-              MINOR=0
-            fi
-
-            # Calculate new version
-            VERSION="${MAJOR}.${COMMITS_SINCE_TAG}"
-          fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            # Release tags (only on v* tag push)
+            type=semver,pattern=v{{version}}
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # Beta tags (on main branch push or manual dispatch)
+            type=raw,value=beta,enable={{is_default_branch}}
+            type=raw,value=beta-{{date 'YYYYMMDD'}}-{{sha}},enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -93,9 +56,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
