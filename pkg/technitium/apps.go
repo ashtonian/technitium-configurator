@@ -10,16 +10,12 @@ import (
 
 // AppConfig represents a generic app configuration that can be unmarshaled into specific types
 type AppConfig struct {
-	Name   string    `yaml:"name" url:"name"`
-	Url    string    `yaml:"url" url:"url"`
-	Config yaml.Node `yaml:"config,omitempty" url:"config,omitempty"`
+	Name   string    `yaml:"name"`
+	Url    string    `yaml:"url"`
+	Config yaml.Node `yaml:"config,omitempty"`
 }
 
 func (a *AppConfig) GetConfigJSON() (string, error) {
-	// if a.Config == nil {
-	// 	return "", nil
-	// }
-
 	var cfg any
 	switch a.Name {
 	case "Advanced Blocking":
@@ -43,8 +39,8 @@ func (a *AppConfig) GetConfigJSON() (string, error) {
 }
 
 type AppInstallRequest struct {
-	Name string `url:"name"`
-	Url  string `url:"url"`
+	Name string `json:"name"`
+	Url  string `json:"url"`
 }
 
 // InstallApp installs a DNS app.
@@ -62,8 +58,8 @@ type AppConfigResponse struct {
 }
 
 type AppConfigRequest struct {
-	Name   string `url:"name"`
-	Config string `url:"config"`
+	Name   string `json:"name"`
+	Config string `json:"config"`
 }
 
 // SetAppConfig sets the configuration for a DNS app.

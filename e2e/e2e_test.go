@@ -3,11 +3,13 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,6 +161,7 @@ func TestE2ECluster(t *testing.T) {
 		secondaryIP   = "172.28.0.11"
 		clusterDomain = "e2e-cluster.local"
 		clusterZone   = "cluster-test.local"
+		forwarderZone = "forwarded.local"
 	)
 
 	startCluster(t, primaryPort, secondaryPort)
@@ -207,7 +210,6 @@ dnsSettings:
   serveStale: true
   serveStaleTtl: 86400
   cacheNegativeRecordTtl: 60
-  cacheMaximumEntries: 0
   enableDnsOverHttp: true
   enableDnsOverTls: true
   enableDnsOverHttps: true
@@ -218,10 +220,60 @@ dnsSettings:
   useLocalTime: true
   maxLogFileDays: 7
   maxStatFileDays: 365
+  recursion: "Allow"
+  qpmPrefixLimitsIPv4:
+    - prefix: 24
+      udpLimit: 600
+      tcpLimit: 100
+  qpmPrefixLimitsIPv6:
+    - prefix: 56
+      udpLimit: 600
+      tcpLimit: 100
+  qpmLimitSampleMinutes: 5
+  cachePrefetchEligibility: 2
+  cachePrefetchTrigger: 9
+  cachePrefetchSampleIntervalInMinutes: 5
+  cachePrefetchSampleEligibilityHitsPerHour: 30
+  cacheMinimumRecordTtl: 60
+  cacheMaximumRecordTtl: 86400
+  cacheFailureRecordTtl: 30
+  cacheMaximumEntries: 50000
+  saveCache: true
+  serveStaleAnswerTtl: 30
+  serveStaleMaxWaitTime: 1800
+  enableDnsOverUdpProxy: true
+  enableDnsOverTcpProxy: true
+  enableDnsOverHttp3: true
+  tsigKeys:
+    - keyName: "e2e-external-dns"
+      algorithmName: "hmac-sha256"
+      sharedSecret: "cHJldGVuZHRoaXNpc2FyZWFsc2VjcmV0a2V5YmFzZTY0"
+    - keyName: "e2e-dhcp"
+      algorithmName: "hmac-sha256"
+      sharedSecret: "YW5vdGhlcnByZXRlbmRzZWNyZXRrZXlmb3JkaGNwdGVzdA=="
 
 zones:
   - zone: %q
     type: "Primary"
+    aclSettings:
+      queryAccess: "AllowOnlyPrivateNetworks"
+      zoneTransfer: "UseSpecifiedNetworkACL"
+      zoneTransferNetworkACL:
+        - "172.28.0.0/16"
+      zoneTransferTsigKeyNames:
+        - "e2e-external-dns"
+        - "e2e-dhcp"
+      update: "UseSpecifiedNetworkACL"
+      updateNetworkACL:
+        - "172.28.0.0/16"
+      updateSecurityPolicies: "e2e-external-dns|*.%s|ANY|e2e-dhcp|*.%s|ANY"
+
+  - zone: "forwarded.local"
+    type: "Forwarder"
+    initializeForwarder: true
+    protocol: "Https"
+    forwarder: "https://cloudflare-dns.com/dns-query"
+    dnssecValidation: true
 
 records:
   - domain: "www.%s"
@@ -233,7 +285,59 @@ records:
     type: "TXT"
     ttl: 300
     text: "v=spf1 -all"
-`, clusterDomain, primaryIP, clusterZone, clusterZone, clusterZone)
+
+apps:
+  - name: "Advanced Blocking"
+    url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v8.zip"
+    config:
+      enableBlocking: true
+      blockListUrlUpdateIntervalHours: 24
+      networkGroupMap:
+        "0.0.0.0/0": "e2e"
+        "::/0": "e2e"
+      groups:
+        - name: "e2e"
+          enableBlocking: true
+          allowTxtBlockingReport: true
+          blockAsNxDomain: true
+          blockingAddresses:
+            - "0.0.0.0"
+            - "::"
+          allowed:
+            - "safe.example.com"
+          blocked: []
+          allowListUrls: []
+          blockListUrls:
+            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt"
+          allowedRegex: []
+          blockedRegex: []
+          regexAllowListUrls: []
+          regexBlockListUrls: []
+          adblockListUrls: []
+
+  - name: "Advanced Forwarding"
+    url: "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v3.1.zip"
+    config:
+      enableForwarding: true
+      forwarders:
+        - name: "cloudflare"
+          dnssecValidation: true
+          forwarderProtocol: "Tls"
+          forwarderAddresses:
+            - "tls://1.1.1.1"
+            - "tls://1.0.0.1"
+      networkGroupMap:
+        "0.0.0.0/0": "default"
+        "::/0": "default"
+      groups:
+        - name: "default"
+          enableForwarding: true
+          forwardings:
+            - forwarders:
+                - "cloudflare"
+              domains:
+                - "*"
+`, clusterDomain, primaryIP, clusterZone, clusterZone, clusterZone, clusterZone, clusterZone)
 
 	primaryCfgPath := filepath.Join(t.TempDir(), "primary-config.yaml")
 	if err := os.WriteFile(primaryCfgPath, []byte(primaryCfg), 0644); err != nil {
@@ -256,6 +360,33 @@ records:
 	verifyZoneExists(t, primaryAPIURL, token, clusterZone)
 	verifyRecordExists(t, primaryAPIURL, token, "www."+clusterZone, "A", clusterZone)
 	verifyRecordExists(t, primaryAPIURL, token, clusterZone, "TXT", clusterZone)
+	verifyDNSSettingsFull(t, primaryAPIURL, token)
+	verifyZoneACL(t, primaryAPIURL, token, clusterZone)
+	verifyForwarderZone(t, primaryAPIURL, token, forwarderZone)
+	verifyAppInstalled(t, primaryAPIURL, token, "Advanced Blocking")
+	verifyAppInstalled(t, primaryAPIURL, token, "Advanced Forwarding")
+	verifyAppConfig(t, primaryAPIURL, token, "Advanced Blocking", func(t *testing.T, configJSON string) {
+		if !strings.Contains(configJSON, `"enableBlocking":true`) {
+			t.Errorf("Advanced Blocking config missing enableBlocking:true")
+		}
+		if !strings.Contains(configJSON, `"e2e"`) {
+			t.Errorf("Advanced Blocking config missing group name 'e2e'")
+		}
+		if !strings.Contains(configJSON, "hagezi") {
+			t.Errorf("Advanced Blocking config missing hagezi blocklist URL")
+		}
+	})
+	verifyAppConfig(t, primaryAPIURL, token, "Advanced Forwarding", func(t *testing.T, configJSON string) {
+		if !strings.Contains(configJSON, `"enableForwarding":true`) {
+			t.Errorf("Advanced Forwarding config missing enableForwarding:true")
+		}
+		if !strings.Contains(configJSON, `"cloudflare"`) {
+			t.Errorf("Advanced Forwarding config missing forwarder name 'cloudflare'")
+		}
+		if !strings.Contains(configJSON, `"*"`) {
+			t.Errorf("Advanced Forwarding config missing domain '*'")
+		}
+	})
 
 	// Secondary config: cluster join ONLY — no DNS settings, zones, or
 	// records.  These replicate from the primary automatically.
@@ -351,6 +482,27 @@ records:
 	verifyZoneExists(t, primaryAPIURL, token3, clusterZone)
 	verifyRecordExists(t, primaryAPIURL, token3, "www."+clusterZone, "A", clusterZone)
 	verifyRecordExists(t, primaryAPIURL, token3, clusterZone, "TXT", clusterZone)
+	verifyDNSSettingsFull(t, primaryAPIURL, token3)
+	verifyZoneACL(t, primaryAPIURL, token3, clusterZone)
+	verifyForwarderZone(t, primaryAPIURL, token3, forwarderZone)
+	verifyAppInstalled(t, primaryAPIURL, token3, "Advanced Blocking")
+	verifyAppInstalled(t, primaryAPIURL, token3, "Advanced Forwarding")
+	verifyAppConfig(t, primaryAPIURL, token3, "Advanced Blocking", func(t *testing.T, configJSON string) {
+		if !strings.Contains(configJSON, `"enableBlocking":true`) {
+			t.Errorf("Advanced Blocking config missing enableBlocking:true after idempotency")
+		}
+		if !strings.Contains(configJSON, `"e2e"`) {
+			t.Errorf("Advanced Blocking config missing group name 'e2e' after idempotency")
+		}
+	})
+	verifyAppConfig(t, primaryAPIURL, token3, "Advanced Forwarding", func(t *testing.T, configJSON string) {
+		if !strings.Contains(configJSON, `"enableForwarding":true`) {
+			t.Errorf("Advanced Forwarding config missing enableForwarding:true after idempotency")
+		}
+		if !strings.Contains(configJSON, `"cloudflare"`) {
+			t.Errorf("Advanced Forwarding config missing forwarder name 'cloudflare' after idempotency")
+		}
+	})
 
 	// ── Verify cluster-state command still works ──────────
 	t.Log("=== Verify cluster-state command ===")
@@ -696,4 +848,270 @@ func verifyClusterState(t *testing.T, apiURL, token string, expectInitialized bo
 	for _, n := range state.Nodes {
 		t.Logf("  node: name=%s type=%s state=%s", n.Name, n.Type, n.State)
 	}
+}
+
+func verifyDNSSettingsFull(t *testing.T, apiURL, token string) {
+	t.Helper()
+	data := queryDNSAPI(t, apiURL, token, "/api/settings/get")
+
+	var settings struct {
+		Recursion             string `json:"recursion"`
+		QpmPrefixLimitsIPv4   []struct {
+			Prefix   int `json:"prefix"`
+			UdpLimit int `json:"udpLimit"`
+			TcpLimit int `json:"tcpLimit"`
+		} `json:"qpmPrefixLimitsIPv4"`
+		QpmPrefixLimitsIPv6   []struct {
+			Prefix   int `json:"prefix"`
+			UdpLimit int `json:"udpLimit"`
+			TcpLimit int `json:"tcpLimit"`
+		} `json:"qpmPrefixLimitsIPv6"`
+		QpmLimitSampleMinutes int `json:"qpmLimitSampleMinutes"`
+		CachePrefetchEligibility                  int    `json:"cachePrefetchEligibility"`
+		CachePrefetchTrigger                      int    `json:"cachePrefetchTrigger"`
+		CachePrefetchSampleIntervalInMinutes      int    `json:"cachePrefetchSampleIntervalInMinutes"`
+		CachePrefetchSampleEligibilityHitsPerHour int    `json:"cachePrefetchSampleEligibilityHitsPerHour"`
+		CacheMinimumRecordTtl                     int    `json:"cacheMinimumRecordTtl"`
+		CacheMaximumRecordTtl                     int    `json:"cacheMaximumRecordTtl"`
+		CacheFailureRecordTtl                     int    `json:"cacheFailureRecordTtl"`
+		CacheMaximumEntries                       int    `json:"cacheMaximumEntries"`
+		SaveCache                                 bool   `json:"saveCache"`
+		ServeStaleAnswerTtl                       int    `json:"serveStaleAnswerTtl"`
+		ServeStaleMaxWaitTime                     int    `json:"serveStaleMaxWaitTime"`
+		EnableDnsOverUdpProxy                     bool   `json:"enableDnsOverUdpProxy"`
+		EnableDnsOverTcpProxy                     bool   `json:"enableDnsOverTcpProxy"`
+		EnableDnsOverHttp3                        bool   `json:"enableDnsOverHttp3"`
+		TsigKeys                                  []struct {
+			KeyName       string `json:"keyName"`
+			AlgorithmName string `json:"algorithmName"`
+		} `json:"tsigKeys"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("failed to parse DNS settings (full): %v", err)
+	}
+
+	assertEq(t, "recursion", settings.Recursion, "Allow")
+	assertEq(t, "qpmLimitSampleMinutes", settings.QpmLimitSampleMinutes, 5)
+
+	// Verify QPM prefix limits IPv4
+	if len(settings.QpmPrefixLimitsIPv4) == 0 {
+		t.Errorf("qpmPrefixLimitsIPv4 is empty, want [{prefix:24, udpLimit:600, tcpLimit:100}]")
+	} else {
+		found := false
+		for _, l := range settings.QpmPrefixLimitsIPv4 {
+			if l.Prefix == 24 && l.UdpLimit == 600 && l.TcpLimit == 100 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("qpmPrefixLimitsIPv4 missing {prefix:24, udpLimit:600, tcpLimit:100}, got %+v", settings.QpmPrefixLimitsIPv4)
+		}
+	}
+
+	// Verify QPM prefix limits IPv6
+	if len(settings.QpmPrefixLimitsIPv6) == 0 {
+		t.Errorf("qpmPrefixLimitsIPv6 is empty, want [{prefix:56, udpLimit:600, tcpLimit:100}]")
+	} else {
+		found := false
+		for _, l := range settings.QpmPrefixLimitsIPv6 {
+			if l.Prefix == 56 && l.UdpLimit == 600 && l.TcpLimit == 100 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("qpmPrefixLimitsIPv6 missing {prefix:56, udpLimit:600, tcpLimit:100}, got %+v", settings.QpmPrefixLimitsIPv6)
+		}
+	}
+	assertEq(t, "cachePrefetchEligibility", settings.CachePrefetchEligibility, 2)
+	assertEq(t, "cachePrefetchTrigger", settings.CachePrefetchTrigger, 9)
+	assertEq(t, "cachePrefetchSampleIntervalInMinutes", settings.CachePrefetchSampleIntervalInMinutes, 5)
+	assertEq(t, "cachePrefetchSampleEligibilityHitsPerHour", settings.CachePrefetchSampleEligibilityHitsPerHour, 30)
+	assertEq(t, "cacheMinimumRecordTtl", settings.CacheMinimumRecordTtl, 60)
+	assertEq(t, "cacheMaximumRecordTtl", settings.CacheMaximumRecordTtl, 86400)
+	assertEq(t, "cacheFailureRecordTtl", settings.CacheFailureRecordTtl, 30)
+	assertEq(t, "cacheMaximumEntries", settings.CacheMaximumEntries, 50000)
+	assertEq(t, "saveCache", settings.SaveCache, true)
+	assertEq(t, "serveStaleAnswerTtl", settings.ServeStaleAnswerTtl, 30)
+	assertEq(t, "serveStaleMaxWaitTime", settings.ServeStaleMaxWaitTime, 1800)
+	assertEq(t, "enableDnsOverUdpProxy", settings.EnableDnsOverUdpProxy, true)
+	assertEq(t, "enableDnsOverTcpProxy", settings.EnableDnsOverTcpProxy, true)
+	assertEq(t, "enableDnsOverHttp3", settings.EnableDnsOverHttp3, true)
+
+	// Verify TSIG keys
+	tsigNames := make(map[string]string)
+	for _, k := range settings.TsigKeys {
+		tsigNames[k.KeyName] = k.AlgorithmName
+	}
+	if alg, ok := tsigNames["e2e-external-dns"]; !ok {
+		t.Errorf("TSIG key e2e-external-dns not found in settings")
+	} else if alg != "hmac-sha256" {
+		t.Errorf("TSIG key e2e-external-dns algorithm = %q, want hmac-sha256", alg)
+	}
+	if alg, ok := tsigNames["e2e-dhcp"]; !ok {
+		t.Errorf("TSIG key e2e-dhcp not found in settings")
+	} else if alg != "hmac-sha256" {
+		t.Errorf("TSIG key e2e-dhcp algorithm = %q, want hmac-sha256", alg)
+	}
+
+	t.Log("verified expanded DNS settings (recursion, QPM, cache, proxy, TSIG)")
+}
+
+func verifyZoneACL(t *testing.T, apiURL, token, zone string) {
+	t.Helper()
+	data := queryDNSAPI(t, apiURL, token,
+		fmt.Sprintf("/api/zones/options/get?zone=%s&includeAvailableTsigKeyNames=true", zone))
+
+	var opts struct {
+		QueryAccess              string            `json:"queryAccess"`
+		ZoneTransfer             string            `json:"zoneTransfer"`
+		ZoneTransferNetworkACL   []string          `json:"zoneTransferNetworkACL"`
+		ZoneTransferTsigKeyNames []string          `json:"zoneTransferTsigKeyNames"`
+		Update                   string            `json:"update"`
+		UpdateNetworkACL         []string          `json:"updateNetworkACL"`
+		UpdateSecurityPolicies   json.RawMessage   `json:"updateSecurityPolicies"`
+		AvailableTsigKeyNames    []string          `json:"availableTsigKeyNames"`
+	}
+	if err := json.Unmarshal(data, &opts); err != nil {
+		t.Fatalf("failed to parse zone options for %s: %v", zone, err)
+	}
+
+	assertEq(t, "queryAccess", opts.QueryAccess, "AllowOnlyPrivateNetworks")
+	assertEq(t, "zoneTransfer", opts.ZoneTransfer, "UseSpecifiedNetworkACL")
+	if !sliceContains(opts.ZoneTransferNetworkACL, "172.28.0.0/16") {
+		t.Errorf("zoneTransferNetworkACL = %v, want to contain 172.28.0.0/16", opts.ZoneTransferNetworkACL)
+	}
+	if !sliceContains(opts.ZoneTransferTsigKeyNames, "e2e-external-dns") {
+		t.Errorf("zoneTransferTsigKeyNames = %v, want to contain e2e-external-dns", opts.ZoneTransferTsigKeyNames)
+	}
+	if !sliceContains(opts.ZoneTransferTsigKeyNames, "e2e-dhcp") {
+		t.Errorf("zoneTransferTsigKeyNames = %v, want to contain e2e-dhcp", opts.ZoneTransferTsigKeyNames)
+	}
+	assertEq(t, "update", opts.Update, "UseSpecifiedNetworkACL")
+	if !sliceContains(opts.UpdateNetworkACL, "172.28.0.0/16") {
+		t.Errorf("updateNetworkACL = %v, want to contain 172.28.0.0/16", opts.UpdateNetworkACL)
+	}
+
+	// Verify update security policies contain both TSIG key entries
+	// The API returns this as a JSON array of policy objects
+	policiesStr := string(opts.UpdateSecurityPolicies)
+	if !strings.Contains(policiesStr, "e2e-external-dns") {
+		t.Errorf("updateSecurityPolicies missing e2e-external-dns: %s", policiesStr)
+	}
+	if !strings.Contains(policiesStr, "e2e-dhcp") {
+		t.Errorf("updateSecurityPolicies missing e2e-dhcp: %s", policiesStr)
+	}
+
+	// Verify TSIG keys are available for this zone
+	if !sliceContains(opts.AvailableTsigKeyNames, "e2e-external-dns") {
+		t.Errorf("availableTsigKeyNames = %v, want to contain e2e-external-dns", opts.AvailableTsigKeyNames)
+	}
+
+	t.Logf("verified zone %q ACL settings (TSIG, transfer, update policies)", zone)
+}
+
+func verifyForwarderZone(t *testing.T, apiURL, token, zone string) {
+	t.Helper()
+	data := queryDNSAPI(t, apiURL, token,
+		fmt.Sprintf("/api/zones/options/get?zone=%s", zone))
+
+	var opts struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &opts); err != nil {
+		t.Fatalf("failed to parse zone options for %s: %v", zone, err)
+	}
+	if opts.Type != "Forwarder" {
+		t.Errorf("zone %s type = %q, want %q", zone, opts.Type, "Forwarder")
+	}
+	t.Logf("verified zone %q exists with type Forwarder", zone)
+}
+
+func verifyAppInstalled(t *testing.T, apiURL, token, appName string) {
+	t.Helper()
+	data := queryDNSAPI(t, apiURL, token, "/api/apps/list")
+
+	type appEntry struct {
+		Name string `json:"name"`
+	}
+
+	// Try as {"apps": [...]} (Technitium response format)
+	var wrapped struct {
+		Apps []appEntry `json:"apps"`
+	}
+	if err := json.Unmarshal(data, &wrapped); err == nil {
+		for _, app := range wrapped.Apps {
+			if app.Name == appName {
+				t.Logf("verified app %q is installed", appName)
+				return
+			}
+		}
+	}
+
+	// Try as direct array [{name: ...}, ...]
+	var apps []appEntry
+	if err := json.Unmarshal(data, &apps); err == nil {
+		for _, app := range apps {
+			if app.Name == appName {
+				t.Logf("verified app %q is installed", appName)
+				return
+			}
+		}
+	}
+
+	t.Errorf("app %q not found in installed apps; raw response: %s", appName, truncate(string(data), 500))
+}
+
+func verifyAppConfig(t *testing.T, apiURL, token, appName string, checkFn func(*testing.T, string)) {
+	t.Helper()
+	data := queryDNSAPI(t, apiURL, token,
+		"/api/apps/config/get?name="+url.QueryEscape(appName))
+
+	// The response is {"config": "...json string..."} — extract the inner config string
+	var wrapper struct {
+		Config string `json:"config"`
+	}
+	var configStr string
+	if err := json.Unmarshal(data, &wrapper); err == nil && wrapper.Config != "" {
+		configStr = wrapper.Config
+	} else {
+		// Fallback: try as a plain JSON string or use raw bytes
+		if err := json.Unmarshal(data, &configStr); err != nil {
+			configStr = string(data)
+		}
+	}
+
+	// Compact JSON to normalize whitespace for consistent string matching
+	var buf bytes.Buffer
+	if json.Compact(&buf, []byte(configStr)) == nil {
+		configStr = buf.String()
+	}
+
+	checkFn(t, configStr)
+	t.Logf("verified app %q config", appName)
+}
+
+func assertEq[T comparable](t *testing.T, name string, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s = %v, want %v", name, got, want)
+	}
+}
+
+func sliceContains(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

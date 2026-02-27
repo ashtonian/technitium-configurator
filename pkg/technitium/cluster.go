@@ -2,7 +2,6 @@ package technitium
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -52,13 +51,13 @@ type ClusterState struct {
 
 // ClusterJoinRequest contains the parameters for joining a cluster
 type ClusterJoinRequest struct {
-	SecondaryNodeIPs    string `url:"secondaryNodeIpAddresses"`
-	PrimaryNodeURL      string `url:"primaryNodeUrl"`
-	PrimaryNodeIP       string `url:"primaryNodeIpAddress,omitempty"`
-	PrimaryNodeUsername string `url:"primaryNodeUsername"`
-	PrimaryNodePassword string `url:"primaryNodePassword"`
-	PrimaryNodeTotp     string `url:"primaryNodeTotp,omitempty"`
-	IgnoreCertErrors    bool   `url:"ignoreCertificateErrors,omitempty"`
+	SecondaryNodeIPs    string `json:"secondaryNodeIpAddresses"`
+	PrimaryNodeURL      string `json:"primaryNodeUrl"`
+	PrimaryNodeIP       string `json:"primaryNodeIpAddress,omitempty"`
+	PrimaryNodeUsername string `json:"primaryNodeUsername"`
+	PrimaryNodePassword string `json:"primaryNodePassword"`
+	PrimaryNodeTotp     string `json:"primaryNodeTotp,omitempty"`
+	IgnoreCertErrors    bool   `json:"ignoreCertificateErrors,omitempty"`
 }
 
 // ClusterOptionsRequest contains timing parameters for the cluster primary node
@@ -69,6 +68,11 @@ type ClusterOptionsRequest struct {
 	ConfigRetryIntervalSecs      int `url:"configRetryIntervalSeconds,omitempty"`
 }
 
+// IsEmpty returns true when no timing options have been set.
+func (r ClusterOptionsRequest) IsEmpty() bool {
+	return r == (ClusterOptionsRequest{})
+}
+
 // GetClusterState retrieves the current cluster state from the Technitium DNS server
 func (c *Client) GetClusterState(ctx context.Context) (*ClusterState, error) {
 	params := struct {
@@ -77,17 +81,11 @@ func (c *Client) GetClusterState(ctx context.Context) (*ClusterState, error) {
 		IncludeServerIpAddresses: true,
 	}
 
-	resp, err := c.callGET(ctx, "/api/admin/cluster/state", params)
+	r, err := c.callGET(ctx, "/api/admin/cluster/state", params)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get cluster state: %w", err)
+		return nil, fmt.Errorf("get cluster state: %w", err)
 	}
-
-	var state ClusterState
-	if err := json.Unmarshal(resp.Response, &state); err != nil {
-		return nil, fmt.Errorf("failed to parse cluster state: %w", err)
-	}
-
-	return &state, nil
+	return unmarshalResp[ClusterState](r)
 }
 
 // ClusterInit initializes clustering on the primary node.
@@ -101,32 +99,20 @@ func (c *Client) ClusterInit(ctx context.Context, clusterDomain, primaryNodeIPs 
 		PrimaryNodeIPAddresses: primaryNodeIPs,
 	}
 
-	resp, err := c.callGET(ctx, "/api/admin/cluster/init", params)
+	r, err := c.callGET(ctx, "/api/admin/cluster/init", params)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize cluster: %w", err)
+		return nil, fmt.Errorf("initialize cluster: %w", err)
 	}
-
-	var state ClusterState
-	if err := json.Unmarshal(resp.Response, &state); err != nil {
-		return nil, fmt.Errorf("failed to parse cluster init response: %w", err)
-	}
-
-	return &state, nil
+	return unmarshalResp[ClusterState](r)
 }
 
 // ClusterJoin joins a secondary node to an existing cluster
 func (c *Client) ClusterJoin(ctx context.Context, req ClusterJoinRequest) (*ClusterState, error) {
-	resp, err := c.callPOSTForm(ctx, "/api/admin/cluster/initJoin", req)
+	r, err := c.callPOSTForm(ctx, "/api/admin/cluster/initJoin", req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to join cluster: %w", err)
+		return nil, fmt.Errorf("join cluster: %w", err)
 	}
-
-	var state ClusterState
-	if err := json.Unmarshal(resp.Response, &state); err != nil {
-		return nil, fmt.Errorf("failed to parse cluster join response: %w", err)
-	}
-
-	return &state, nil
+	return unmarshalResp[ClusterState](r)
 }
 
 // SetClusterOptions configures timing options on the cluster primary node.

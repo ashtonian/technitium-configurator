@@ -89,6 +89,14 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 
 	// Apply DNS settings (skip if none specified, e.g. secondary cluster node)
 	if !reflect.DeepEqual(dnsCfg.DNSSettings, technitium.DnsSettings{}) {
+		// Merge configured TSIG keys with any existing keys (e.g. cluster-internal
+		// catalog keys) so we don't accidentally remove keys the server needs.
+		if len(dnsCfg.DNSSettings.TsigKeys) > 0 {
+			if existing, err := client.GetDNSSettings(ctx); err == nil && len(existing.TsigKeys) > 0 {
+				dnsCfg.DNSSettings.TsigKeys = mergeTsigKeys(existing.TsigKeys, dnsCfg.DNSSettings.TsigKeys)
+			}
+		}
+
 		if err := client.SetDNSSettings(ctx, dnsCfg.DNSSettings); err != nil {
 			return fmt.Errorf("failed to set DNS settings: %w", err)
 		}
@@ -280,7 +288,7 @@ func applyCluster(ctx context.Context, client *technitium.Client, cfg *technitiu
 						ConfigRefreshIntervalSecs:    cc.ConfigRefreshIntervalSecs,
 						ConfigRetryIntervalSecs:      cc.ConfigRetryIntervalSecs,
 					}
-					if optReq != (technitium.ClusterOptionsRequest{}) {
+					if !optReq.IsEmpty() {
 						if err := client.SetClusterOptions(ctx, optReq); err != nil {
 							return fmt.Errorf("failed to set cluster options: %w", err)
 						}
@@ -308,9 +316,10 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 		return err
 	}
 
-	// Check for existing token in Kubernetes secret if configured
+	// Create a single K8s client if needed for secret operations
+	var k8s *kube.K8sClient
 	if cfg.K8sSecretName != "" {
-		k8s, err := kube.NewK8sClient()
+		k8s, err = kube.NewK8sClient()
 		if err != nil {
 			return fmt.Errorf("failed to create k8s client: %w", err)
 		}
@@ -326,13 +335,12 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 
 	// Check for existing token in file if configured
 	if cfg.TokenPath != "" {
-		var existingToken technitium.CreateTokenResponse
 		if _, err := os.Stat(cfg.TokenPath); err == nil {
 			data, err := os.ReadFile(cfg.TokenPath)
 			if err != nil {
 				return fmt.Errorf("failed to read token file: %w", err)
 			}
-			// TODO: hack unmarshal model
+			var existingToken technitium.CreateTokenResponse
 			if err := yaml.Unmarshal(data, &existingToken); err != nil {
 				return fmt.Errorf("failed to parse token file: %w", err)
 			}
@@ -350,13 +358,7 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 	}
 
 	// Save token to Kubernetes secret if configured
-	if cfg.K8sSecretName != "" {
-		// TODO: dupe k8s, it is a singleton but could be better.
-		k8s, err := kube.NewK8sClient()
-		if err != nil {
-			return fmt.Errorf("failed to create k8s client: %w", err)
-		}
-
+	if k8s != nil {
 		if err := k8s.CreateOrUpdateSecret(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey, tokenResp.Token); err != nil {
 			return fmt.Errorf("failed to save token to k8s secret: %w", err)
 		}
@@ -375,7 +377,7 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 		slog.Info("Token saved to file", "path", cfg.TokenPath)
 	}
 
-	if cfg.K8sSecretName == "" && cfg.TokenPath == "" {
+	if k8s == nil && cfg.TokenPath == "" {
 		slog.Info("Token created successfully (not saved to file or k8s secret)")
 	}
 
@@ -426,4 +428,23 @@ func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []s
 	}
 
 	return nil
+}
+
+// mergeTsigKeys combines existing server TSIG keys with user-configured keys.
+// Configured keys take precedence (by keyName); existing keys not present in
+// the config (e.g. cluster-catalog keys) are preserved.
+func mergeTsigKeys(existing, configured []technitium.TsigKey) []technitium.TsigKey {
+	configuredNames := make(map[string]bool, len(configured))
+	for _, k := range configured {
+		configuredNames[k.KeyName] = true
+	}
+
+	merged := make([]technitium.TsigKey, len(configured))
+	copy(merged, configured)
+	for _, k := range existing {
+		if !configuredNames[k.KeyName] {
+			merged = append(merged, k)
+		}
+	}
+	return merged
 }

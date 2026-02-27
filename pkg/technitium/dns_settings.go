@@ -50,9 +50,15 @@ type TsigKey struct {
 	AlgorithmName string `json:"algorithmName,omitempty" yaml:"algorithmName,omitempty"`
 }
 
+// QpmPrefixLimit represents a QPM rate-limit entry per IP prefix length.
+type QpmPrefixLimit struct {
+	Prefix   int `json:"prefix" yaml:"prefix"`
+	UdpLimit int `json:"udpLimit" yaml:"udpLimit"`
+	TcpLimit int `json:"tcpLimit" yaml:"tcpLimit"`
+}
+
 // DnsSettings mirrors request/response object from /api/settings/.
 type DnsSettings struct {
-	// Proxy                                     string    `json:"proxy,omitempty"`
 	Version                                   string    `json:"version,omitempty" yaml:"version,omitempty"`
 	Uptimestamp                               string    `json:"uptimestamp,omitempty" yaml:"uptimestamp,omitempty"`
 	DnsServerDomain                           string    `json:"dnsServerDomain,omitempty" yaml:"dnsServerDomain,omitempty"`
@@ -77,12 +83,10 @@ type DnsSettings struct {
 	EDnsClientSubnetIPv6PrefixLength          int       `json:"eDnsClientSubnetIPv6PrefixLength,omitempty" yaml:"eDnsClientSubnetIPv6PrefixLength,omitempty"`
 	EDnsClientSubnetIpv4Override              string    `json:"eDnsClientSubnetIpv4Override,omitempty" yaml:"eDnsClientSubnetIpv4Override,omitempty"`
 	EDnsClientSubnetIpv6Override              string    `json:"eDnsClientSubnetIpv6Override,omitempty" yaml:"eDnsClientSubnetIpv6Override,omitempty"`
-	QpmLimitRequests                          int       `json:"qpmLimitRequests,omitempty" yaml:"qpmLimitRequests,omitempty"`
-	QpmLimitErrors                            int       `json:"qpmLimitErrors,omitempty" yaml:"qpmLimitErrors,omitempty"`
-	QpmLimitSampleMinutes                     int       `json:"qpmLimitSampleMinutes,omitempty" yaml:"qpmLimitSampleMinutes,omitempty"`
-	QpmLimitIPv4PrefixLength                  int       `json:"qpmLimitIPv4PrefixLength,omitempty" yaml:"qpmLimitIPv4PrefixLength,omitempty"`
-	QpmLimitIPv6PrefixLength                  int       `json:"qpmLimitIPv6PrefixLength,omitempty" yaml:"qpmLimitIPv6PrefixLength,omitempty"`
-	QpmLimitBypassList                        []string  `json:"qpmLimitBypassList,omitempty" yaml:"qpmLimitBypassList,omitempty"`
+	QpmPrefixLimitsIPv4                       []QpmPrefixLimit `json:"qpmPrefixLimitsIPv4,omitempty" yaml:"qpmPrefixLimitsIPv4,omitempty"`
+	QpmPrefixLimitsIPv6                       []QpmPrefixLimit `json:"qpmPrefixLimitsIPv6,omitempty" yaml:"qpmPrefixLimitsIPv6,omitempty"`
+	QpmLimitSampleMinutes                     int              `json:"qpmLimitSampleMinutes,omitempty" yaml:"qpmLimitSampleMinutes,omitempty"`
+	QpmLimitBypassList                        []string         `json:"qpmLimitBypassList,omitempty" yaml:"qpmLimitBypassList,omitempty"`
 	ClientTimeout                             int       `json:"clientTimeout,omitempty" yaml:"clientTimeout,omitempty"`
 	TcpSendTimeout                            int       `json:"tcpSendTimeout,omitempty" yaml:"tcpSendTimeout,omitempty"`
 	TcpReceiveTimeout                         int       `json:"tcpReceiveTimeout,omitempty" yaml:"tcpReceiveTimeout,omitempty"`
@@ -167,11 +171,17 @@ type DnsSettings struct {
 	MaxStatFileDays                           int       `json:"maxStatFileDays,omitempty" yaml:"maxStatFileDays,omitempty"`
 }
 
-func (c *Client) SetDNSSettings(ctx context.Context, opts DnsSettings) error {
-	_, err := c.callPOST(ctx, "/api/settings/set", opts)
+func (c *Client) GetDNSSettings(ctx context.Context) (*DnsSettings, error) {
+	r, err := c.callGET(ctx, "/api/settings/get", struct{}{})
 	if err != nil {
+		return nil, fmt.Errorf("get DNS settings: %w", err)
+	}
+	return unmarshalResp[DnsSettings](r)
+}
+
+func (c *Client) SetDNSSettings(ctx context.Context, opts DnsSettings) error {
+	if _, err := c.callPOST(ctx, "/api/settings/set", opts); err != nil {
 		return fmt.Errorf("set DNS settings: %w", err)
 	}
-
 	return nil
 }

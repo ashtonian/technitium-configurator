@@ -121,29 +121,31 @@ func (c *Client) callPOST(ctx context.Context, path string, body any) (*apiResp,
 	return parse(resp)
 }
 
+// callPOSTForm sends a form-encoded POST request. It marshals the struct via
+// its json tags (using jsonToFormValues) so that all request structs can use a
+// single set of json+yaml tags. Only the /api/settings/set endpoint supports a
+// raw JSON body (callPOST); every other mutating endpoint requires form encoding.
 func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiResp, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	qs, err := query.Values(in)
+	vals, err := jsonToFormValues(in)
 	if err != nil {
 		return nil, err
 	}
 	if c.Token != "" {
-		qs.Set("token", c.Token)
+		vals.Set("token", c.Token)
 	}
 
-	u := c.normalizePath(path)
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		u,
-		strings.NewReader(qs.Encode()),
+		c.normalizePath(path),
+		strings.NewReader(vals.Encode()),
 	)
 	if err != nil {
 		return nil, err
 	}
-
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
 
 	resp, err := c.hc.Do(req)
@@ -153,6 +155,111 @@ func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiRes
 	return parse(resp)
 }
 
+// jsonToFormValues marshals a struct using its json tags, then converts the
+// resulting key-value pairs to url.Values suitable for form-encoded POST.
+// String arrays are joined with commas; object arrays are sent as JSON strings.
+func jsonToFormValues(v any) (url.Values, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+
+	vals := url.Values{}
+	for k, raw := range m {
+		if string(raw) == "null" {
+			continue
+		}
+		// JSON string → unquoted value
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			vals.Set(k, s)
+			continue
+		}
+		// String array → comma-separated (e.g. dnsServerLocalEndPoints)
+		var strs []string
+		if json.Unmarshal(raw, &strs) == nil {
+			vals.Set(k, strings.Join(strs, ","))
+			continue
+		}
+		// Numbers, bools, object arrays → literal JSON representation
+		vals.Set(k, string(raw))
+	}
+
+	return vals, nil
+}
+
+// unmarshalResp is a generic helper that unmarshals an apiResp.Response
+// into the target type, eliminating repeated decode boilerplate.
+func unmarshalResp[T any](r *apiResp) (*T, error) {
+	var v T
+	if err := json.Unmarshal(r.Response, &v); err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+// callGETDirect performs a GET request and decodes the full response body into
+// dest. Unlike callGET, it does not expect the standard {status, response}
+// envelope (used by Login and CreateToken).
+func (c *Client) callGETDirect(ctx context.Context, path string, params any, dest any) (httpCode int, err error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	qs, err := query.Values(params)
+	if err != nil {
+		return 0, err
+	}
+	if c.Token != "" {
+		qs.Set("token", c.Token)
+	}
+
+	u := fmt.Sprintf("%s?%s", c.normalizePath(path), qs.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode, json.NewDecoder(resp.Body).Decode(dest)
+}
+
+// validateDirectResp validates a response where status/error fields are at the
+// top level rather than nested in a "response" envelope.
+func validateDirectResp(httpCode int, decodeErr error, status, errMsg, message string) error {
+	if httpCode != 0 && httpCode != http.StatusOK {
+		msg := errMsg
+		if msg == "" {
+			msg = message
+		}
+		if decodeErr == nil && msg != "" {
+			return fmt.Errorf("HTTP %d: %s", httpCode, msg)
+		}
+		return fmt.Errorf("HTTP %d", httpCode)
+	}
+	if decodeErr != nil {
+		return decodeErr
+	}
+	if status != "" && status != "ok" {
+		msg := errMsg
+		if msg == "" {
+			msg = message
+		}
+		if msg == "" {
+			msg = status
+		}
+		return errors.New(msg)
+	}
+	return nil
+}
 
 func extractErrMsg(r *apiResp) string {
 	msg := r.ErrorMessage
@@ -207,9 +314,6 @@ type CreateTokenResponse struct {
 // CreateToken creates a non-expiring API token for the specified user.
 // The token will have the same privileges as the user account.
 func (c *Client) CreateToken(ctx context.Context, username, password, tokenName string) (*CreateTokenResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
 	params := struct {
 		User      string `url:"user"`
 		Pass      string `url:"pass"`
@@ -220,53 +324,12 @@ func (c *Client) CreateToken(ctx context.Context, username, password, tokenName 
 		TokenName: tokenName,
 	}
 
-	qs, err := query.Values(params)
-	if err != nil {
-		return nil, err
+	var resp CreateTokenResponse
+	code, decodeErr := c.callGETDirect(ctx, "/api/user/createToken", params, &resp)
+	if err := validateDirectResp(code, decodeErr, resp.Status, resp.ErrorMessage, resp.Message); err != nil {
+		return nil, fmt.Errorf("create token: %w", err)
 	}
-
-	path := "/api/user/createToken"
-	u := fmt.Sprintf("%s?%s", c.normalizePath(path), qs.Encode())
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.hc.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var tokenResp CreateTokenResponse
-	decodeErr := json.NewDecoder(resp.Body).Decode(&tokenResp)
-
-	if resp.StatusCode != http.StatusOK {
-		if decodeErr == nil && (tokenResp.ErrorMessage != "" || tokenResp.Message != "") {
-			msg := tokenResp.ErrorMessage
-			if msg == "" {
-				msg = tokenResp.Message
-			}
-			return nil, fmt.Errorf("create token: HTTP %d: %s", resp.StatusCode, msg)
-		}
-		return nil, fmt.Errorf("create token: HTTP %d", resp.StatusCode)
-	}
-
-	if decodeErr != nil {
-		return nil, fmt.Errorf("create token: %w", decodeErr)
-	}
-
-	if tokenResp.Status != "" && tokenResp.Status != "ok" {
-		msg := tokenResp.ErrorMessage
-		if msg == "" {
-			msg = tokenResp.Message
-		}
-		if msg == "" {
-			msg = tokenResp.Status
-		}
-		return nil, fmt.Errorf("create token: %s", msg)
-	}
-
-	return &tokenResp, nil
+	return &resp, nil
 }
 
 type LoginResponse struct {
@@ -282,9 +345,6 @@ type LoginResponse struct {
 // Login authenticates with the server and returns a session token.
 // On successful login, the client's token is automatically updated.
 func (c *Client) Login(ctx context.Context, username, password string) (*LoginResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
 	params := struct {
 		User        string `url:"user"`
 		Pass        string `url:"pass"`
@@ -295,55 +355,13 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 		IncludeInfo: false,
 	}
 
-	qs, err := query.Values(params)
-	if err != nil {
-		return nil, err
+	var resp LoginResponse
+	code, decodeErr := c.callGETDirect(ctx, "/api/user/login", params, &resp)
+	if err := validateDirectResp(code, decodeErr, resp.Status, resp.ErrorMessage, resp.Message); err != nil {
+		return nil, fmt.Errorf("login: %w", err)
 	}
-	path := "/api/user/login"
-	u := fmt.Sprintf("%s?%s", c.normalizePath(path), qs.Encode())
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.hc.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var loginResp LoginResponse
-	decodeErr := json.NewDecoder(resp.Body).Decode(&loginResp)
-
-	if resp.StatusCode != http.StatusOK {
-		if decodeErr == nil && (loginResp.ErrorMessage != "" || loginResp.Message != "") {
-			msg := loginResp.ErrorMessage
-			if msg == "" {
-				msg = loginResp.Message
-			}
-			return nil, fmt.Errorf("login: HTTP %d: %s", resp.StatusCode, msg)
-		}
-		return nil, fmt.Errorf("login: HTTP %d", resp.StatusCode)
-	}
-
-	if decodeErr != nil {
-		return nil, fmt.Errorf("login: %w", decodeErr)
-	}
-
-	if loginResp.Status != "" && loginResp.Status != "ok" {
-		msg := loginResp.ErrorMessage
-		if msg == "" {
-			msg = loginResp.Message
-		}
-		if msg == "" {
-			msg = loginResp.Status
-		}
-		return nil, fmt.Errorf("login: %s", msg)
-	}
-
-	// Update the client's token on successful login
-	c.Token = loginResp.Token
-
-	return &loginResp, nil
+	c.Token = resp.Token
+	return &resp, nil
 }
 
 func (c *Client) ChangePassword(ctx context.Context, currentPassword, newPassword string) error {
