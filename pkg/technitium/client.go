@@ -154,6 +154,35 @@ func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiRes
 	return parse(resp)
 }
 
+// callPOSTFormRaw sends a POST with pre-built url.Values (no struct conversion).
+func (c *Client) callPOSTFormRaw(ctx context.Context, path string, vals url.Values) (*apiResp, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	if c.Token != "" {
+		vals.Set("token", c.Token)
+	}
+
+	u := c.normalizePath(path)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		u,
+		strings.NewReader(vals.Encode()),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return parse(resp)
+}
+
 func parse(resp *http.Response) (*apiResp, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
