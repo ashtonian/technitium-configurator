@@ -60,7 +60,10 @@ func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command strin
 }
 
 func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client := technitium.NewClient(cfg)
+	client, err := technitium.NewClient(cfg)
+	if err != nil {
+		return err
+	}
 
 	cfgPath := cfg.ConfigPath
 	if len(args) > 0 {
@@ -300,7 +303,10 @@ func applyCluster(ctx context.Context, client *technitium.Client, cfg *technitiu
 }
 
 func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client := technitium.NewClient(cfg)
+	client, err := technitium.NewClient(cfg)
+	if err != nil {
+		return err
+	}
 
 	// Check for existing token in Kubernetes secret if configured
 	if cfg.K8sSecretName != "" {
@@ -377,7 +383,10 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 }
 
 func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client := technitium.NewClient(cfg)
+	client, err := technitium.NewClient(cfg)
+	if err != nil {
+		return err
+	}
 
 	if err := client.ChangePassword(ctx, cfg.Password, cfg.NewPassword); err != nil {
 		return fmt.Errorf("failed to change password: %w", err)
@@ -388,7 +397,10 @@ func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args [
 }
 
 func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client := technitium.NewClient(cfg)
+	client, err := technitium.NewClient(cfg)
+	if err != nil {
+		return err
+	}
 
 	state, err := client.GetClusterState(ctx)
 	if err != nil {

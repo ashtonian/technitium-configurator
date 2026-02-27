@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,7 +24,7 @@ type Client struct {
 }
 
 // NewClient creates a new Technitium DNS Server API client with the given configuration
-func NewClient(cfg *ClientConfig) *Client {
+func NewClient(cfg *ClientConfig) (*Client, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
@@ -48,11 +47,11 @@ func NewClient(cfg *ClientConfig) *Client {
 		defer cancel()
 
 		if _, err := client.Login(ctx, cfg.Username, cfg.Password); err != nil {
-			slog.Error("Failed to login with username/password", "error", err)
+			return nil, fmt.Errorf("failed to login: %w", err)
 		}
 	}
 
-	return client
+	return client, nil
 }
 
 // normalizePath ensures consistent path handling by:
@@ -154,54 +153,37 @@ func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiRes
 	return parse(resp)
 }
 
-// callPOSTFormRaw sends a POST with pre-built url.Values (no struct conversion).
-func (c *Client) callPOSTFormRaw(ctx context.Context, path string, vals url.Values) (*apiResp, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
 
-	if c.Token != "" {
-		vals.Set("token", c.Token)
+func extractErrMsg(r *apiResp) string {
+	msg := r.ErrorMessage
+	if msg == "" {
+		msg = r.Message
 	}
-
-	u := c.normalizePath(path)
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		u,
-		strings.NewReader(vals.Encode()),
-	)
-	if err != nil {
-		return nil, err
+	if msg == "" {
+		msg = r.Status
 	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	return parse(resp)
+	return msg
 }
 
 func parse(resp *http.Response) (*apiResp, error) {
 	defer resp.Body.Close()
+
+	var r apiResp
+	decodeErr := json.NewDecoder(resp.Body).Decode(&r)
+
 	if resp.StatusCode != http.StatusOK {
+		if decodeErr == nil && (r.ErrorMessage != "" || r.Message != "") {
+			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrMsg(&r))
+		}
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	var r apiResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return nil, err
+	if decodeErr != nil {
+		return nil, decodeErr
 	}
+
 	if r.Status != "ok" {
-		msg := r.ErrorMessage
-		if msg == "" {
-			msg = r.Message
-		}
-		if msg == "" {
-			msg = r.Status
-		}
-		return nil, errors.New(msg)
+		return nil, errors.New(extractErrMsg(&r))
 	}
 	return &r, nil
 }
@@ -214,10 +196,12 @@ type apiResp struct {
 }
 
 type CreateTokenResponse struct {
-	Username  string `json:"username,omitempty" yaml:"username,omitempty"`
-	TokenName string `json:"tokenName,omitempty" yaml:"tokenName,omitempty"`
-	Token     string `json:"token,omitempty" yaml:"token,omitempty"`
-	Status    string `json:"status,omitempty" yaml:"status,omitempty"`
+	Username     string `json:"username,omitempty" yaml:"username,omitempty"`
+	TokenName    string `json:"tokenName,omitempty" yaml:"tokenName,omitempty"`
+	Token        string `json:"token,omitempty" yaml:"token,omitempty"`
+	Status       string `json:"status,omitempty" yaml:"status,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty" yaml:"-"`
+	Message      string `json:"message,omitempty" yaml:"-"`
 }
 
 // CreateToken creates a non-expiring API token for the specified user.
@@ -253,28 +237,46 @@ func (c *Client) CreateToken(ctx context.Context, username, password, tokenName 
 	}
 	defer resp.Body.Close()
 
+	var tokenResp CreateTokenResponse
+	decodeErr := json.NewDecoder(resp.Body).Decode(&tokenResp)
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		if decodeErr == nil && (tokenResp.ErrorMessage != "" || tokenResp.Message != "") {
+			msg := tokenResp.ErrorMessage
+			if msg == "" {
+				msg = tokenResp.Message
+			}
+			return nil, fmt.Errorf("create token: HTTP %d: %s", resp.StatusCode, msg)
+		}
+		return nil, fmt.Errorf("create token: HTTP %d", resp.StatusCode)
 	}
 
-	var tokenResp CreateTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, err
+	if decodeErr != nil {
+		return nil, fmt.Errorf("create token: %w", decodeErr)
 	}
 
 	if tokenResp.Status != "" && tokenResp.Status != "ok" {
-		return nil, fmt.Errorf("create token: %s", tokenResp.Status)
+		msg := tokenResp.ErrorMessage
+		if msg == "" {
+			msg = tokenResp.Message
+		}
+		if msg == "" {
+			msg = tokenResp.Status
+		}
+		return nil, fmt.Errorf("create token: %s", msg)
 	}
 
 	return &tokenResp, nil
 }
 
 type LoginResponse struct {
-	DisplayName string          `json:"displayName,omitempty"`
-	Username    string          `json:"username,omitempty"`
-	Token       string          `json:"token,omitempty"`
-	Info        json.RawMessage `json:"info,omitempty"`
-	Status      string          `json:"status,omitempty"`
+	DisplayName  string          `json:"displayName,omitempty"`
+	Username     string          `json:"username,omitempty"`
+	Token        string          `json:"token,omitempty"`
+	Info         json.RawMessage `json:"info,omitempty"`
+	Status       string          `json:"status,omitempty"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
+	Message      string          `json:"message,omitempty"`
 }
 
 // Login authenticates with the server and returns a session token.
@@ -309,17 +311,33 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 	}
 	defer resp.Body.Close()
 
+	var loginResp LoginResponse
+	decodeErr := json.NewDecoder(resp.Body).Decode(&loginResp)
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		if decodeErr == nil && (loginResp.ErrorMessage != "" || loginResp.Message != "") {
+			msg := loginResp.ErrorMessage
+			if msg == "" {
+				msg = loginResp.Message
+			}
+			return nil, fmt.Errorf("login: HTTP %d: %s", resp.StatusCode, msg)
+		}
+		return nil, fmt.Errorf("login: HTTP %d", resp.StatusCode)
 	}
 
-	var loginResp LoginResponse
-	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
-		return nil, err
+	if decodeErr != nil {
+		return nil, fmt.Errorf("login: %w", decodeErr)
 	}
 
 	if loginResp.Status != "" && loginResp.Status != "ok" {
-		return nil, fmt.Errorf("login: %s", loginResp.Status)
+		msg := loginResp.ErrorMessage
+		if msg == "" {
+			msg = loginResp.Message
+		}
+		if msg == "" {
+			msg = loginResp.Status
+		}
+		return nil, fmt.Errorf("login: %s", msg)
 	}
 
 	// Update the client's token on successful login
