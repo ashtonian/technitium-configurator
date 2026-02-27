@@ -39,6 +39,8 @@ const (
 	RT_URI                 RecordType           = "URI"
 	RT_CAA                 RecordType           = "CAA"
 	RT_ANAME               RecordType           = "ANAME"
+	RT_NAPTR               RecordType           = "NAPTR"
+	RT_RP                  RecordType           = "RP"
 	RT_FWD                 RecordType           = "FWD"
 	RT_APP                 RecordType           = "APP"
 	DSAlgoRSAMD5           DSAlgorithm          = "RSAMD5"

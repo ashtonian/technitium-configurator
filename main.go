@@ -52,7 +52,11 @@ func main() {
 				"  DNS_NEW_PASSWORD          Required for change-password\n"+
 				"  DNS_TOKEN_PATH            Path to token file (default: token.yaml)\n"+
 				"  DNS_CONFIG_PATH           Path to config file (default: config.yaml)\n"+
-				"  DNS_TIMEOUT               Timeout for API calls (default: 30s)\n")
+				"  DNS_TIMEOUT               Timeout for API calls (default: 30s)\n"+
+				"  DNS_LOG_LEVEL             Logging level (debug, info, warn, error)\n"+
+				"  DNS_K8S_SECRET_NAME       Kubernetes secret name for token storage\n"+
+				"  DNS_K8S_SECRET_NAMESPACE  Kubernetes secret namespace (default: default)\n"+
+				"  DNS_K8S_SECRET_KEY        Kubernetes secret key (default: api-token)\n")
 	}
 
 	if len(os.Args) < 2 {
