@@ -52,7 +52,7 @@ func main() {
 				"  DNS_NEW_PASSWORD          Required for change-password\n"+
 				"  DNS_TOKEN_PATH            Path to token file (default: token.yaml)\n"+
 				"  DNS_CONFIG_PATH           Path to config file (default: config.yaml)\n"+
-				"  DNS_TIMEOUT              Timeout for API calls (default: 30s)\n")
+				"  DNS_TIMEOUT               Timeout for API calls (default: 30s)\n")
 	}
 
 	if len(os.Args) < 2 {

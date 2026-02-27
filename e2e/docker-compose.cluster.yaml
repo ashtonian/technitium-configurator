@@ -1,0 +1,43 @@
+networks:
+  cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+services:
+  dns-primary:
+    image: technitium/dns-server:latest
+    ports:
+      - "${DNS_PRIMARY_PORT}:5380/tcp"
+    networks:
+      cluster:
+        ipv4_address: 172.28.0.10
+    environment:
+      - DNS_SERVER_DOMAIN=primary.cluster.local
+    tmpfs:
+      - /etc/dns
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/5380'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  dns-secondary:
+    image: technitium/dns-server:latest
+    ports:
+      - "${DNS_SECONDARY_PORT}:5380/tcp"
+    networks:
+      cluster:
+        ipv4_address: 172.28.0.11
+    environment:
+      - DNS_SERVER_DOMAIN=secondary.cluster.local
+    tmpfs:
+      - /etc/dns
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/5380'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s

@@ -25,28 +25,29 @@ const (
 
 // ClusterNode represents a single node in the Technitium DNS cluster
 type ClusterNode struct {
-	ID        int              `json:"id"`
-	Name      string           `json:"name"`
-	URL       string           `json:"url"`
-	IPAddress string           `json:"ipAddress"`
-	Type      ClusterNodeType  `json:"type"`
-	State     ClusterNodeState `json:"state"`
-	LastSeen  string           `json:"lastSeen"`
+	ID          int              `json:"id"`
+	Name        string           `json:"name"`
+	URL         string           `json:"url"`
+	IPAddresses []string         `json:"ipAddresses"`
+	Type        ClusterNodeType  `json:"type"`
+	State       ClusterNodeState `json:"state"`
+	LastSeen    string           `json:"lastSeen"`
+	UpSince     string           `json:"upSince"`
 }
 
 // ClusterState represents the current state of the Technitium DNS cluster
 type ClusterState struct {
-	ClusterInitialized         bool          `json:"clusterInitialized"`
-	DnsServerDomain            string        `json:"dnsServerDomain"`
-	Version                    string        `json:"version"`
-	ClusterDomain              string        `json:"clusterDomain"`
-	HeartbeatRefreshIntervalSecs int         `json:"heartbeatRefreshIntervalSeconds"`
-	HeartbeatRetryIntervalSecs   int         `json:"heartbeatRetryIntervalSeconds"`
-	ConfigRefreshIntervalSecs    int         `json:"configRefreshIntervalSeconds"`
-	ConfigRetryIntervalSecs      int         `json:"configRetryIntervalSeconds"`
-	ConfigLastSynced           string        `json:"configLastSynced"`
-	Nodes                      []ClusterNode `json:"nodes"`
-	ServerIpAddresses          []string      `json:"serverIpAddresses"`
+	ClusterInitialized           bool          `json:"clusterInitialized"`
+	DnsServerDomain              string        `json:"dnsServerDomain"`
+	Version                      string        `json:"version"`
+	ClusterDomain                string        `json:"clusterDomain"`
+	HeartbeatRefreshIntervalSecs int           `json:"heartbeatRefreshIntervalSeconds"`
+	HeartbeatRetryIntervalSecs   int           `json:"heartbeatRetryIntervalSeconds"`
+	ConfigRefreshIntervalSecs    int           `json:"configRefreshIntervalSeconds"`
+	ConfigRetryIntervalSecs      int           `json:"configRetryIntervalSeconds"`
+	ConfigLastSynced             string        `json:"configLastSynced"`
+	Nodes                        []ClusterNode `json:"clusterNodes"`
+	ServerIpAddresses            []string      `json:"serverIpAddresses"`
 }
 
 // ClusterJoinRequest contains the parameters for joining a cluster
@@ -56,7 +57,16 @@ type ClusterJoinRequest struct {
 	PrimaryNodeIP       string `url:"primaryNodeIpAddress,omitempty"`
 	PrimaryNodeUsername string `url:"primaryNodeUsername"`
 	PrimaryNodePassword string `url:"primaryNodePassword"`
+	PrimaryNodeTotp     string `url:"primaryNodeTotp,omitempty"`
 	IgnoreCertErrors    bool   `url:"ignoreCertificateErrors,omitempty"`
+}
+
+// ClusterOptionsRequest contains timing parameters for the cluster primary node
+type ClusterOptionsRequest struct {
+	HeartbeatRefreshIntervalSecs int `url:"heartbeatRefreshIntervalSeconds,omitempty"`
+	HeartbeatRetryIntervalSecs   int `url:"heartbeatRetryIntervalSeconds,omitempty"`
+	ConfigRefreshIntervalSecs    int `url:"configRefreshIntervalSeconds,omitempty"`
+	ConfigRetryIntervalSecs      int `url:"configRetryIntervalSeconds,omitempty"`
 }
 
 // GetClusterState retrieves the current cluster state from the Technitium DNS server
@@ -117,4 +127,14 @@ func (c *Client) ClusterJoin(ctx context.Context, req ClusterJoinRequest) (*Clus
 	}
 
 	return &state, nil
+}
+
+// SetClusterOptions configures timing options on the cluster primary node.
+// Despite being a state mutation, Technitium uses GET for this endpoint.
+func (c *Client) SetClusterOptions(ctx context.Context, req ClusterOptionsRequest) error {
+	_, err := c.callGET(ctx, "/api/admin/cluster/primary/setOptions", req)
+	if err != nil {
+		return fmt.Errorf("failed to set cluster options: %w", err)
+	}
+	return nil
 }

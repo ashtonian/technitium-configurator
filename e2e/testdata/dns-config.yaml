@@ -3,8 +3,36 @@ dnsSettings:
   dnsServerLocalEndPoints:
     - "0.0.0.0:53"
   defaultRecordTtl: 300
+  defaultNsRecordTtl: 3600
+  defaultSoaRecordTtl: 900
   dnssecValidation: false
   enableBlocking: false
+  preferIPv6: false
+  udpPayloadSize: 1232
+  qpmLimitRequests: 0
+  qpmLimitErrors: 0
+  clientTimeout: 2000
+  resolverRetries: 2
+  resolverTimeout: 2000
+  resolverConcurrency: 4
+  forwarderRetries: 2
+  forwarderTimeout: 2000
+  forwarderConcurrency: 10
+  concurrentForwarding: true
+  serveStale: true
+  serveStaleTtl: 86400
+  cacheNegativeRecordTtl: 60
+  cacheMaximumEntries: 0
+  enableDnsOverHttp: true
+  enableDnsOverTls: true
+  enableDnsOverHttps: true
+  enableDnsOverQuic: true
+  loggingType: "FileAndConsole"
+  enableLogging: true
+  logQueries: false
+  useLocalTime: true
+  maxLogFileDays: 7
+  maxStatFileDays: 365
 
 zones:
   - zone: "e2e-test.local"

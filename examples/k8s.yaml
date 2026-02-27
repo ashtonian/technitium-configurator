@@ -5,6 +5,28 @@ metadata:
   name: technitium-config
 data:
   config.yaml: |-
+    # Optional: cluster configuration (applied before DNS settings).
+    # Only the primary needs dnsSettings/zones/records below — they
+    # replicate to secondary nodes. Secondary config is cluster-only.
+    #
+    # Primary:
+    # cluster:
+    #   mode: "primary"
+    #   domain: "dns-cluster.example.com"
+    #   nodeIPs: "10.0.0.1"
+    #   configRefreshIntervalSeconds: 60
+    #   heartbeatRefreshIntervalSeconds: 10
+    #
+    # Secondary (separate ConfigMap, no dnsSettings needed):
+    # cluster:
+    #   mode: "secondary"
+    #   nodeIPs: "10.0.0.2"
+    #   primaryURL: "https://primary-dns.example.com:5380"
+    #   primaryIP: "10.0.0.1"
+    #   primaryUsername: "admin"
+    #   primaryPassword: "password"
+    #   primaryTotp: ""
+    #   ignoreCertErrors: false
     dnsSettings:
       dnsServerDomain: "technitium.somedomain.com"
       recursion: Deny

@@ -10,8 +10,27 @@ type zone struct {
 	ACLSettings       *ACLSettings `yaml:"aclSettings,omitempty"`
 }
 
+// ClusterConfig represents the cluster configuration in YAML
+type ClusterConfig struct {
+	Mode             string `yaml:"mode"`                  // "primary" or "secondary"
+	Domain           string `yaml:"domain"`                // cluster domain name
+	NodeIPs          string `yaml:"nodeIPs"`               // this node's IP(s), comma-separated
+	PrimaryURL       string `yaml:"primaryURL"`            // primary node URL (secondary only)
+	PrimaryIP        string `yaml:"primaryIP"`             // primary node IP (secondary, optional)
+	PrimaryUsername  string `yaml:"primaryUsername"`       // primary node credentials (secondary only)
+	PrimaryPassword  string `yaml:"primaryPassword"`       // primary node credentials (secondary only)
+	PrimaryTotp      string `yaml:"primaryTotp,omitempty"` // TOTP for 2FA-enabled primaries (secondary only)
+	IgnoreCertErrors bool   `yaml:"ignoreCertErrors"`      // ignore TLS cert errors (secondary, optional)
+	// Cluster timing options (primary only)
+	ConfigRefreshIntervalSecs    int `yaml:"configRefreshIntervalSeconds,omitempty"`
+	ConfigRetryIntervalSecs      int `yaml:"configRetryIntervalSeconds,omitempty"`
+	HeartbeatRefreshIntervalSecs int `yaml:"heartbeatRefreshIntervalSeconds,omitempty"`
+	HeartbeatRetryIntervalSecs   int `yaml:"heartbeatRetryIntervalSeconds,omitempty"`
+}
+
 // Config represents the root configuration structure
 type Config struct {
+	Cluster     *ClusterConfig     `yaml:"cluster,omitempty"`
 	DNSSettings DnsSettings        `yaml:"dnsSettings"`
 	Zones       []zone             `yaml:"zones"`
 	Records     []AddRecordRequest `yaml:"records"`
@@ -41,6 +60,8 @@ type DnsSettings struct {
 	DnsServerIPv4SourceAddresses              []string  `json:"dnsServerIPv4SourceAddresses,omitempty" yaml:"dnsServerIPv4SourceAddresses,omitempty"`
 	DnsServerIPv6SourceAddresses              []string  `json:"dnsServerIPv6SourceAddresses,omitempty" yaml:"dnsServerIPv6SourceAddresses,omitempty"`
 	DefaultRecordTtl                          int       `json:"defaultRecordTtl,omitempty" yaml:"defaultRecordTtl,omitempty"`
+	DefaultNsRecordTtl                        int       `json:"defaultNsRecordTtl,omitempty" yaml:"defaultNsRecordTtl,omitempty"`
+	DefaultSoaRecordTtl                       int       `json:"defaultSoaRecordTtl,omitempty" yaml:"defaultSoaRecordTtl,omitempty"`
 	DefaultResponsiblePerson                  string    `json:"defaultResponsiblePerson,omitempty" yaml:"defaultResponsiblePerson,omitempty"`
 	UseSoaSerialDateScheme                    bool      `json:"useSoaSerialDateScheme,omitempty" yaml:"useSoaSerialDateScheme,omitempty"`
 	MinSoaRefresh                             int       `json:"minSoaRefresh,omitempty" yaml:"minSoaRefresh,omitempty"`
@@ -135,6 +156,7 @@ type DnsSettings struct {
 	ForwarderRetries                          int       `json:"forwarderRetries,omitempty" yaml:"forwarderRetries,omitempty"`
 	ForwarderTimeout                          int       `json:"forwarderTimeout,omitempty" yaml:"forwarderTimeout,omitempty"`
 	ForwarderConcurrency                      int       `json:"forwarderConcurrency,omitempty" yaml:"forwarderConcurrency,omitempty"`
+	LoggingType                               string    `json:"loggingType,omitempty" yaml:"loggingType,omitempty"`
 	EnableLogging                             bool      `json:"enableLogging,omitempty" yaml:"enableLogging,omitempty"`
 	IgnoreResolverLogs                        bool      `json:"ignoreResolverLogs,omitempty" yaml:"ignoreResolverLogs,omitempty"`
 	LogQueries                                bool      `json:"logQueries,omitempty" yaml:"logQueries,omitempty"`

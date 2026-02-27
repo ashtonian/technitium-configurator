@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
 	"time"
 
 	"github.com/ashtonian/technitium-sdk-go/pkg/kube"
@@ -35,16 +36,6 @@ var Commands = map[string]Command{
 		Name:        "change-password",
 		Description: "Change the password for the current user",
 		Run:         runChangePassword,
-	},
-	"cluster-init": {
-		Name:        "cluster-init",
-		Description: "Initialize clustering on the primary node",
-		Run:         runClusterInit,
-	},
-	"cluster-join": {
-		Name:        "cluster-join",
-		Description: "Join this node to an existing cluster as secondary",
-		Run:         runClusterJoin,
 	},
 	"cluster-state": {
 		Name:        "cluster-state",
@@ -86,11 +77,20 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Apply DNS settings
-	if err := client.SetDNSSettings(ctx, dnsCfg.DNSSettings); err != nil {
-		return fmt.Errorf("failed to set DNS settings: %w", err)
+	// Apply cluster configuration (before DNS settings)
+	if dnsCfg.Cluster != nil {
+		if err := applyCluster(ctx, client, cfg, dnsCfg.Cluster); err != nil {
+			return err
+		}
 	}
-	slog.Info("DNS settings configured", "server", cfg.APIURL)
+
+	// Apply DNS settings (skip if none specified, e.g. secondary cluster node)
+	if !reflect.DeepEqual(dnsCfg.DNSSettings, technitium.DnsSettings{}) {
+		if err := client.SetDNSSettings(ctx, dnsCfg.DNSSettings); err != nil {
+			return fmt.Errorf("failed to set DNS settings: %w", err)
+		}
+		slog.Info("DNS settings configured", "server", cfg.APIURL)
+	}
 
 	// Configure zones
 	for _, z := range dnsCfg.Zones {
@@ -193,6 +193,112 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 	return nil
 }
 
+func applyCluster(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig, cc *technitium.ClusterConfig) error {
+	switch cc.Mode {
+	case "primary":
+		if cc.Domain == "" {
+			return fmt.Errorf("cluster domain is required for primary mode")
+		}
+		if cc.NodeIPs == "" {
+			return fmt.Errorf("cluster nodeIPs is required for primary mode")
+		}
+	case "secondary":
+		if cc.NodeIPs == "" {
+			return fmt.Errorf("cluster nodeIPs is required for secondary mode")
+		}
+		if cc.PrimaryURL == "" {
+			return fmt.Errorf("cluster primaryURL is required for secondary mode")
+		}
+		if cc.PrimaryUsername == "" {
+			return fmt.Errorf("cluster primaryUsername is required for secondary mode")
+		}
+		if cc.PrimaryPassword == "" {
+			return fmt.Errorf("cluster primaryPassword is required for secondary mode")
+		}
+	default:
+		return fmt.Errorf("invalid cluster mode %q: must be \"primary\" or \"secondary\"", cc.Mode)
+	}
+
+	state, err := client.GetClusterState(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster state: %w", err)
+	}
+
+	if state.ClusterInitialized {
+		slog.Info("Cluster already initialized, skipping",
+			"domain", state.ClusterDomain,
+			"nodes", len(state.Nodes))
+		return nil
+	}
+
+	if cc.Mode == "primary" {
+		if _, err := client.ClusterInit(ctx, cc.Domain, cc.NodeIPs); err != nil {
+			return fmt.Errorf("failed to initialize cluster: %w", err)
+		}
+		slog.Info("Cluster initialized", "domain", cc.Domain)
+	} else {
+		req := technitium.ClusterJoinRequest{
+			SecondaryNodeIPs:    cc.NodeIPs,
+			PrimaryNodeURL:      cc.PrimaryURL,
+			PrimaryNodeIP:       cc.PrimaryIP,
+			PrimaryNodeUsername: cc.PrimaryUsername,
+			PrimaryNodePassword: cc.PrimaryPassword,
+			PrimaryNodeTotp:     cc.PrimaryTotp,
+			IgnoreCertErrors:    cc.IgnoreCertErrors,
+		}
+		if _, err := client.ClusterJoin(ctx, req); err != nil {
+			return fmt.Errorf("failed to join cluster: %w", err)
+		}
+		slog.Info("Joined cluster", "primaryURL", cc.PrimaryURL)
+	}
+
+	// After cluster init/join the server's internal state changes and the
+	// previous session token may be invalidated.  Wait briefly for the
+	// server to stabilize, then re-authenticate so the rest of the
+	// configure pipeline (DNS settings, zones, records, …) has a valid
+	// session.
+	slog.Info("Waiting for server to stabilize after cluster operation")
+	time.Sleep(5 * time.Second)
+
+	if cfg.Username != "" && cfg.Password != "" {
+		var loginErr error
+		for i := 0; i < 3; i++ {
+			if i > 0 {
+				time.Sleep(5 * time.Second)
+			}
+			if _, loginErr = client.Login(ctx, cfg.Username, cfg.Password); loginErr == nil {
+				slog.Info("Re-authenticated after cluster operation")
+
+				// Apply cluster timing options (primary only)
+				if cc.Mode == "primary" {
+					optReq := technitium.ClusterOptionsRequest{
+						HeartbeatRefreshIntervalSecs: cc.HeartbeatRefreshIntervalSecs,
+						HeartbeatRetryIntervalSecs:   cc.HeartbeatRetryIntervalSecs,
+						ConfigRefreshIntervalSecs:    cc.ConfigRefreshIntervalSecs,
+						ConfigRetryIntervalSecs:      cc.ConfigRetryIntervalSecs,
+					}
+					if optReq != (technitium.ClusterOptionsRequest{}) {
+						if err := client.SetClusterOptions(ctx, optReq); err != nil {
+							return fmt.Errorf("failed to set cluster options: %w", err)
+						}
+						slog.Info("Cluster options configured",
+							"configRefreshInterval", optReq.ConfigRefreshIntervalSecs,
+							"configRetryInterval", optReq.ConfigRetryIntervalSecs,
+							"heartbeatRefreshInterval", optReq.HeartbeatRefreshIntervalSecs,
+							"heartbeatRetryInterval", optReq.HeartbeatRetryIntervalSecs)
+					}
+				}
+
+				return nil
+			}
+			slog.Debug("Re-login attempt failed, retrying", "attempt", i+1, "error", loginErr)
+		}
+		return fmt.Errorf("failed to re-authenticate after cluster operation: %w", loginErr)
+	}
+
+	return nil
+}
+
 func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
 	client := technitium.NewClient(cfg)
 
@@ -281,73 +387,6 @@ func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args [
 	return nil
 }
 
-func runClusterInit(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client := technitium.NewClient(cfg)
-
-	state, err := client.GetClusterState(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get cluster state: %w", err)
-	}
-
-	if state.ClusterInitialized {
-		slog.Info("Cluster already initialized",
-			"domain", state.ClusterDomain,
-			"nodes", len(state.Nodes))
-		return nil
-	}
-
-	state, err = client.ClusterInit(ctx, cfg.ClusterDomain, cfg.ClusterNodeIPs)
-	if err != nil {
-		return fmt.Errorf("failed to initialize cluster: %w", err)
-	}
-
-	slog.Info("Cluster initialized successfully",
-		"domain", state.ClusterDomain,
-		"nodes", len(state.Nodes))
-	for _, n := range state.Nodes {
-		slog.Info("Cluster node", "name", n.Name, "type", n.Type, "state", n.State)
-	}
-	return nil
-}
-
-func runClusterJoin(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client := technitium.NewClient(cfg)
-
-	state, err := client.GetClusterState(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get cluster state: %w", err)
-	}
-
-	if state.ClusterInitialized {
-		slog.Info("Node already part of a cluster",
-			"domain", state.ClusterDomain,
-			"nodes", len(state.Nodes))
-		return nil
-	}
-
-	req := technitium.ClusterJoinRequest{
-		SecondaryNodeIPs:    cfg.ClusterNodeIPs,
-		PrimaryNodeURL:      cfg.ClusterPrimaryURL,
-		PrimaryNodeIP:       cfg.ClusterPrimaryIP,
-		PrimaryNodeUsername: cfg.ClusterPrimaryUsername,
-		PrimaryNodePassword: cfg.ClusterPrimaryPassword,
-		IgnoreCertErrors:    cfg.ClusterIgnoreCertErr,
-	}
-
-	state, err = client.ClusterJoin(ctx, req)
-	if err != nil {
-		return fmt.Errorf("failed to join cluster: %w", err)
-	}
-
-	slog.Info("Successfully joined cluster",
-		"domain", state.ClusterDomain,
-		"nodes", len(state.Nodes))
-	for _, n := range state.Nodes {
-		slog.Info("Cluster node", "name", n.Name, "type", n.Type, "state", n.State)
-	}
-	return nil
-}
-
 func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
 	client := technitium.NewClient(cfg)
 
@@ -369,7 +408,9 @@ func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []s
 			"type", n.Type,
 			"state", n.State,
 			"url", n.URL,
-			"lastSeen", n.LastSeen)
+			"ipAddresses", n.IPAddresses,
+			"lastSeen", n.LastSeen,
+			"upSince", n.UpSince)
 	}
 
 	return nil

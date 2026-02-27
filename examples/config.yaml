@@ -1,12 +1,61 @@
+# Cluster configuration (applied before DNS settings).
+# Primary node — include DNS settings, zones, and records below.
+# Secondary node — use cluster-only config (no dnsSettings/zones/records
+# needed; they replicate from the primary).
+#
+# Primary example:
+# cluster:
+#   mode: "primary"
+#   domain: "dns-cluster.example.com"
+#   nodeIPs: "10.0.0.1"
+#   # Cluster timing options (primary only):
+#   configRefreshIntervalSeconds: 60      # how often secondaries sync config (default 900)
+#   configRetryIntervalSeconds: 30        # retry interval on sync failure (default 60)
+#   heartbeatRefreshIntervalSeconds: 15   # heartbeat interval (default 30)
+#   heartbeatRetryIntervalSeconds: 10     # heartbeat retry interval (default 10)
+#
+# Secondary example (cluster-only, no DNS settings needed):
+# cluster:
+#   mode: "secondary"
+#   nodeIPs: "10.0.0.2"
+#   primaryURL: "https://primary-dns:5380"
+#   primaryIP: "10.0.0.1"
+#   primaryUsername: "admin"
+#   primaryPassword: "password"
+#   primaryTotp: ""                       # TOTP code for 2FA-enabled primaries
+#   ignoreCertErrors: false
+
 dnsSettings:
   dnsServerDomain: "dnsserver.com"
   dnsServerLocalEndPoints:
     - "0.0.0.0:53"
   defaultRecordTtl: 3600
+  defaultNsRecordTtl: 3600
+  defaultSoaRecordTtl: 900
   dnssecValidation: true
+  preferIPv6: false
+  udpPayloadSize: 1232
+  resolverRetries: 2
+  resolverTimeout: 2000
+  resolverConcurrency: 4
+  forwarderRetries: 2
+  forwarderTimeout: 2000
+  forwarderConcurrency: 10
+  concurrentForwarding: true
+  serveStale: true
+  serveStaleTtl: 86400
+  cacheNegativeRecordTtl: 60
+  cacheMaximumEntries: 0
+  enableDnsOverHttp: true
   enableDnsOverHttps: true
   enableDnsOverTls: true
   enableDnsOverQuic: true
+  loggingType: "FileAndConsole"
+  enableLogging: true
+  logQueries: false
+  useLocalTime: true
+  maxLogFileDays: 7
+  maxStatFileDays: 365
 
 zones:
   - zone: "example2.com"

@@ -1,5 +1,12 @@
 # Technitium Configurator
 
+[![Build](https://github.com/ashtonian/technitium-configurator/actions/workflows/docker.yml/badge.svg)](https://github.com/ashtonian/technitium-configurator/actions/workflows/docker.yml)
+[![Docker Image](https://img.shields.io/docker/v/ashtonian/technitium-configurator?sort=semver&label=docker)](https://hub.docker.com/r/ashtonian/technitium-configurator)
+[![Docker Pulls](https://img.shields.io/docker/pulls/ashtonian/technitium-configurator)](https://hub.docker.com/r/ashtonian/technitium-configurator)
+[![Docker Image Size](https://img.shields.io/docker/image-size/ashtonian/technitium-configurator/latest)](https://hub.docker.com/r/ashtonian/technitium-configurator)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/ashtonian/technitium-configurator)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A Go tool for configuring [Technitium DNS](https://technitium.com/dns/) Server in a declarative fashion, supporting both one-time setup and continuous configuration management. Also supports password management, API token creation with Kubernetes secret sync, and DNS cluster orchestration.
 
 ## Why
@@ -13,21 +20,23 @@ DNS is *critical* and therefore its configuration should be easily repeatable. T
 - **Zone management** — Primary, Secondary, Stub, Forwarder, Catalog zones with ACLs
 - **Record management** — All standard record types (A, AAAA, CNAME, MX, TXT, SRV, DS, SSHFP, TLSA, SVCB, HTTPS, URI, CAA, NAPTR, FWD, APP, and more)
 - **App installation & configuration** — Advanced Blocking, Advanced Forwarding
-- **Cluster support** — Initialize, join, and inspect Technitium DNS clusters
+- **Cluster support** — Declarative cluster init/join via YAML config, plus `cluster-state` for inspection
 - **API token management** — Create non-expiring tokens, store in file or Kubernetes secret
 - **Password management** — Change user passwords
 - **Kubernetes-native** — Token storage in K8s secrets, RBAC manifests, Job-based deployment
 - **Idempotent** — Safe to run repeatedly; existing state is detected and preserved
 
+## Compatibility
+
+Tested against **Technitium DNS Server v14.x** (v14.3+). Cluster features (init, join, setOptions) require v14.0+. Older versions may work for basic DNS settings, zones, and records but are not officially supported.
+
 ## Available Commands
 
 | Command | Description |
 |---|---|
-| `configure` | Apply DNS server configuration from a YAML file |
+| `configure` | Apply DNS server configuration from a YAML file (including cluster setup) |
 | `create-token` | Create an API token (saves to file and/or Kubernetes secret) |
 | `change-password` | Change the password for the current user |
-| `cluster-init` | Initialize clustering on the primary node |
-| `cluster-join` | Join this node to an existing cluster as secondary |
 | `cluster-state` | Display the current cluster topology and health |
 
 ## Quick Start
@@ -86,27 +95,58 @@ docker run --rm \
 
 ### 4. Set Up a Cluster
 
+Cluster configuration is declarative — add a `cluster` section to your DNS config YAML and it will be applied during `configure`. Only the primary node needs DNS settings, zones, and records; they replicate to secondary nodes via the cluster.
+
+```yaml
+# Step 1: Configure the primary node first (cluster init + full DNS config)
+cluster:
+  mode: "primary"
+  domain: "dns-cluster.example.com"
+  nodeIPs: "10.0.0.1"
+  # Cluster timing options (primary only):
+  configRefreshIntervalSeconds: 60      # how often secondaries sync config (default 900)
+  configRetryIntervalSeconds: 30        # retry interval on sync failure (default 60)
+  heartbeatRefreshIntervalSeconds: 15   # heartbeat interval (default 30)
+  heartbeatRetryIntervalSeconds: 10     # heartbeat retry interval (default 10)
+
+dnsSettings:
+  # ...
+zones:
+  # ...
+records:
+  # ...
+```
+
+```yaml
+# Step 2: Configure the secondary node (cluster join only, no DNS config needed)
+# DNS settings, zones, and records replicate automatically from the primary.
+cluster:
+  mode: "secondary"
+  nodeIPs: "10.0.0.2"
+  primaryURL: "https://primary-dns:5380"
+  primaryIP: "10.0.0.1"
+  primaryUsername: "admin"
+  primaryPassword: "password"
+  primaryTotp: ""              # TOTP code for 2FA-enabled primaries
+  ignoreCertErrors: false
+```
+
 ```bash
-# Initialize the primary node
+# Step 1: Configure primary (cluster init + DNS settings + zones + records)
 docker run --rm \
   -e DNS_API_URL="http://primary-dns:5380" \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="password" \
-  -e DNS_CLUSTER_DOMAIN="dns-cluster.example.com" \
-  -e DNS_CLUSTER_NODE_IPS="10.0.0.1,10.0.0.2" \
-  ashtonian/technitium-configurator:latest cluster-init
+  -v "$(pwd)/primary.yaml:/app/config.yaml" \
+  ashtonian/technitium-configurator:latest configure
 
-# Join a secondary node
+# Step 2: Configure secondary (cluster join only — must run after primary)
 docker run --rm \
   -e DNS_API_URL="http://secondary-dns:5380" \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="password" \
-  -e DNS_CLUSTER_NODE_IPS="10.0.0.2" \
-  -e DNS_CLUSTER_PRIMARY_URL="https://primary-dns:5380" \
-  -e DNS_CLUSTER_PRIMARY_IP="10.0.0.1" \
-  -e DNS_CLUSTER_PRIMARY_USERNAME="admin" \
-  -e DNS_CLUSTER_PRIMARY_PASSWORD="password" \
-  ashtonian/technitium-configurator:latest cluster-join
+  -v "$(pwd)/secondary.yaml:/app/config.yaml" \
+  ashtonian/technitium-configurator:latest configure
 
 # Check cluster state
 docker run --rm \
@@ -129,7 +169,7 @@ The configurator supports two methods of configuration, with environment variabl
 |---|---|---|
 | `DNS_API_URL` | Yes | URL of the DNS server API (e.g., `http://dns-server:5380`) |
 | `DNS_API_TOKEN` | Conditional | API token for authentication |
-| `DNS_USERNAME` | Conditional | Username for token creation, password change, and cluster commands |
+| `DNS_USERNAME` | Conditional | Username for token creation and password change |
 | `DNS_PASSWORD` | Conditional | Current password |
 | `DNS_NEW_PASSWORD` | For `change-password` | New password |
 
@@ -148,17 +188,6 @@ The configurator supports two methods of configuration, with environment variabl
 | `DNS_K8S_SECRET_NAMESPACE` | `default` | Namespace for the Kubernetes secret |
 | `DNS_K8S_SECRET_KEY` | `api-token` | Key in Kubernetes secret to store token |
 
-#### Clustering
-| Variable | Description |
-|---|---|
-| `DNS_CLUSTER_DOMAIN` | Cluster domain name (required for `cluster-init`) |
-| `DNS_CLUSTER_NODE_IPS` | Comma-separated node IPs (required for `cluster-init` and `cluster-join`) |
-| `DNS_CLUSTER_PRIMARY_URL` | Primary node URL (required for `cluster-join`) |
-| `DNS_CLUSTER_PRIMARY_IP` | Primary node IP (for `cluster-join`) |
-| `DNS_CLUSTER_PRIMARY_USERNAME` | Primary node username (required for `cluster-join`) |
-| `DNS_CLUSTER_PRIMARY_PASSWORD` | Primary node password (required for `cluster-join`) |
-| `DNS_CLUSTER_IGNORE_CERT_ERRORS` | Skip TLS verification for cluster communication |
-
 ### Configurator Config File
 
 The configurator itself can be configured via YAML (separate from the DNS config):
@@ -174,8 +203,6 @@ log_level: "info"
 k8s_secret_name: "technitium-token"
 k8s_secret_namespace: "default"
 k8s_secret_key: "api-token"
-cluster_domain: "dns-cluster.example.com"
-cluster_node_ips: "10.0.0.1,10.0.0.2"
 ```
 
 ### DNS Configuration File
@@ -183,6 +210,29 @@ cluster_node_ips: "10.0.0.1,10.0.0.2"
 The DNS config file defines your desired server state. See [`examples/config.yaml`](examples/config.yaml) for a full reference.
 
 ```yaml
+# Optional: cluster configuration (applied before DNS settings).
+# Only the primary needs dnsSettings/zones/records — they replicate
+# to secondary nodes. Secondary config is cluster-only.
+#
+# Primary:
+# cluster:
+#   mode: "primary"
+#   domain: "dns-cluster.example.com"
+#   nodeIPs: "10.0.0.1"
+#   configRefreshIntervalSeconds: 60
+#   heartbeatRefreshIntervalSeconds: 10
+#
+# Secondary (separate config file, no dnsSettings needed):
+# cluster:
+#   mode: "secondary"
+#   nodeIPs: "10.0.0.2"
+#   primaryURL: "https://primary-dns:5380"
+#   primaryIP: "10.0.0.1"
+#   primaryUsername: "admin"
+#   primaryPassword: "password"
+#   primaryTotp: ""
+#   ignoreCertErrors: false
+
 dnsSettings:
   dnsServerDomain: "technitium.somedomain.com"
   recursion: Deny
@@ -409,13 +459,13 @@ Multi-arch builds (amd64/arm64) are automated via GitHub Actions on push to `mai
 
 ## Testing
 
-End-to-end tests spin up a real Technitium DNS server via Docker and verify the full configurator lifecycle including idempotency:
+End-to-end tests spin up real Technitium DNS servers via Docker and verify the full configurator lifecycle including idempotency and clustering:
 
 ```bash
 go test -tags=e2e ./e2e
 ```
 
-Requires Docker to be available.
+Requires Docker to be available. The cluster test spins up two DNS servers on a shared Docker network to verify primary init, secondary join, and idempotent re-runs.
 
 ## Limitations
 
@@ -431,6 +481,15 @@ When re-running the configurator on existing zones:
 - Apps are installed if not present
 - App configurations are updated if changed
 - Cannot uninstall apps through the configurator
+
+### Cluster Management
+
+- Cluster init/join is applied during `configure` before DNS settings, zones, and records
+- `primaryURL` must use a hostname (not a raw IP) — Technitium creates a `DomainEndPoint` from the URL hostname
+- `primaryIP` should be provided when the primary hostname can't be resolved by the secondary's DNS (e.g., Docker service names)
+- After cluster operations, the configurator waits for the server to stabilize and re-authenticates before continuing
+- Idempotent — if the cluster is already initialized, the cluster step is skipped
+- Only `cluster-state` remains as a standalone command; init/join are now part of `configure`
 
 ### Token Management
 
