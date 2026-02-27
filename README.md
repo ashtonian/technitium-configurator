@@ -1,128 +1,80 @@
 # Technitium Configurator
 
-A Go tool for configuring [Technitium DNS](https://technitium.com/dns/) Server in a declarative fashion, supporting both one-time setup and continuous configuration management (see limitations). Also supports updating user password, and creating/syncing a kube secret with an api token value.
+A Go tool for configuring [Technitium DNS](https://technitium.com/dns/) Server in a declarative fashion, supporting both one-time setup and continuous configuration management. Also supports password management, API token creation with Kubernetes secret sync, and DNS cluster orchestration.
 
 ## Why
 
-DNS is *critical* and therefore its configuration should be easily repeatable. Technetium is one of the only open source, authoritative servers with a UI, that supports additional feature sets like dns sink hole, RFC2136 support (external-dns), split horizon ect... However its config files are currently stored in binary with complex versioning/logic, and there isn't a declarative solution. To address this, an over engineered configuration utility was born.
+DNS is *critical* and therefore its configuration should be easily repeatable. Technitium is one of the only open source, authoritative DNS servers with a UI that supports additional feature sets like DNS sinkhole, RFC 2136 (external-dns), split horizon, and more. However its config files are stored in binary with complex versioning/logic, and there isn't a declarative solution. To address this, an over-engineered configuration utility was born.
 
 ## Features
 
-- Create and manage API tokens
-- Update user passwords
-- Configure DNS server settings
-- Manage DNS zones and records
-- Install and configure apps
+- **Declarative DNS configuration** — define your entire DNS setup in YAML
+- **DNS server settings** — 100+ configurable parameters
+- **Zone management** — Primary, Secondary, Stub, Forwarder, Catalog zones with ACLs
+- **Record management** — All standard record types (A, AAAA, CNAME, MX, TXT, SRV, DS, SSHFP, TLSA, SVCB, HTTPS, URI, CAA, NAPTR, FWD, APP, and more)
+- **App installation & configuration** — Advanced Blocking, Advanced Forwarding
+- **Cluster support** — Initialize, join, and inspect Technitium DNS clusters
+- **API token management** — Create non-expiring tokens, store in file or Kubernetes secret
+- **Password management** — Change user passwords
+- **Kubernetes-native** — Token storage in K8s secrets, RBAC manifests, Job-based deployment
+- **Idempotent** — Safe to run repeatedly; existing state is detected and preserved
 
-## Supported Apps
+## Available Commands
 
-Currently supports:
+| Command | Description |
+|---|---|
+| `configure` | Apply DNS server configuration from a YAML file |
+| `create-token` | Create an API token (saves to file and/or Kubernetes secret) |
+| `change-password` | Change the password for the current user |
+| `cluster-init` | Initialize clustering on the primary node |
+| `cluster-join` | Join this node to an existing cluster as secondary |
+| `cluster-state` | Display the current cluster topology and health |
 
-- Advanced Blocking (DNS blocking and filtering)
-- Advanced Forwarding (DNS forwarding and proxy)
+## Quick Start
 
-### Adding New Apps
-
-To add support for a new app:
-
-1. Add a new config struct in `pkg/technitium/`, struct needs json and yaml tags.
-    1. The `UnmarshalYAML` and field json/yaml struct tags should account for any default value handling the app is expecting.
-
-2. Add a case in the app configuration switch statement in `main.go`:
-
-```go
-	switch a.Name {
-	case "Advanced Blocking":
-		cfg = new(BlockingConfig)
-	case "New App":
-		cfg = new(NewAppConfig)
-    ...
-	}
-```
-
-
-## Usage
-
-### Running As container
-
-The configurator is available as a container image:
+### Running as a Container
 
 ```bash
 docker pull ashtonian/technitium-configurator:latest
 ```
 
-### Configuration Methods
+Multi-arch images are published for `linux/amd64` and `linux/arm64`.
 
-The configurator supports two methods of configuration:
+### 1. Change the Default Password
 
-1. **Environment Variables**
-   - All settings can be provided via environment variables
-   - Environment variables take precedence over YAML config
-   - No config files required
-
-2. **YAML Configuration Files**
-   - Traditional file-based configuration
-   - Can be mixed with environment variables
-   - Environment variables override YAML settings
-
-### Available Environment Variables
-
-```
-DNS_API_URL               Required: URL of the DNS server API (e.g., http://dns-server:5380)
-DNS_API_TOKEN            Optional: API token for authentication
-DNS_USERNAME             Required for create-token and change-password commands
-DNS_PASSWORD             Required for create-token and change-password commands
-DNS_NEW_PASSWORD         Required for change-password command
-DNS_TOKEN_PATH           Optional: Path to token file (default: token.yaml)
-DNS_CONFIG_PATH          Optional: Path to config file (default: config.yaml)
-DNS_TIMEOUT              Optional: Timeout for API calls (default: 30s)
-DNS_LOG_LEVEL            Optional: Logging level (debug, info, warn, error) (default: info)
-DNS_K8S_SECRET_NAME      Optional: Name of Kubernetes secret to store token in
-DNS_K8S_SECRET_NAMESPACE Optional: Namespace of Kubernetes secret (default: default)
-DNS_K8S_SECRET_KEY       Optional: Key in Kubernetes secret to store token (default: api-token)
-```
-
-### Configurator Configuration File
-
-The configurator can also be configured using a YAML file. Here's an example configuration:
-
-```yaml
-api_url: "http://dns-server:5380"
-api_token: "your-token"
-username: "admin"
-password: "your-password"
-token_path: "/app/token.yaml"
-timeout: 30s
-log_level: "info"  # debug, info, warn, or error
-k8s_secret_name: "technitium-token"
-k8s_secret_namespace: "default"
-k8s_secret_key: "api-token"
-```
-
-### Basic Usage
-
-1. Create a token (using environment variables):
 ```bash
-# Store token in a file
 docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
   -e DNS_USERNAME="admin" \
-  -e DNS_PASSWORD="your-password" \
+  -e DNS_PASSWORD="admin" \
+  -e DNS_NEW_PASSWORD="new-secure-password" \
+  ashtonian/technitium-configurator:latest change-password
+```
+
+### 2. Create an API Token
+
+```bash
+# Save token to a file
+docker run --rm \
+  -e DNS_API_URL="http://your-dns-server:5380" \
+  -e DNS_USERNAME="admin" \
+  -e DNS_PASSWORD="new-secure-password" \
   -e DNS_TOKEN_PATH="/app/token.yaml" \
   -v "$(pwd)/token.yaml:/app/token.yaml" \
   ashtonian/technitium-configurator:latest create-token
 
-# Store token in a Kubernetes secret
+# Or save token to a Kubernetes secret
 docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
   -e DNS_USERNAME="admin" \
-  -e DNS_PASSWORD="your-password" \
+  -e DNS_PASSWORD="new-secure-password" \
   -e DNS_K8S_SECRET_NAME="technitium-token" \
   -e DNS_K8S_SECRET_NAMESPACE="default" \
   ashtonian/technitium-configurator:latest create-token
 ```
 
-1. Configure DNS server (using environment variables):
+### 3. Apply DNS Configuration
+
 ```bash
 docker run --rm \
   -e DNS_API_URL="http://your-dns-server:5380" \
@@ -132,175 +84,338 @@ docker run --rm \
   ashtonian/technitium-configurator:latest configure
 ```
 
-1. Change password:
+### 4. Set Up a Cluster
 
 ```bash
+# Initialize the primary node
 docker run --rm \
-  -e DNS_API_URL="http://your-dns-server:5380" \
+  -e DNS_API_URL="http://primary-dns:5380" \
   -e DNS_USERNAME="admin" \
-  -e DNS_PASSWORD="current-password" \
-  -e DNS_NEW_PASSWORD="new-password" \
-  ashtonian/technitium-configurator:latest change-password
+  -e DNS_PASSWORD="password" \
+  -e DNS_CLUSTER_DOMAIN="dns-cluster.example.com" \
+  -e DNS_CLUSTER_NODE_IPS="10.0.0.1,10.0.0.2" \
+  ashtonian/technitium-configurator:latest cluster-init
+
+# Join a secondary node
+docker run --rm \
+  -e DNS_API_URL="http://secondary-dns:5380" \
+  -e DNS_USERNAME="admin" \
+  -e DNS_PASSWORD="password" \
+  -e DNS_CLUSTER_NODE_IPS="10.0.0.2" \
+  -e DNS_CLUSTER_PRIMARY_URL="https://primary-dns:5380" \
+  -e DNS_CLUSTER_PRIMARY_IP="10.0.0.1" \
+  -e DNS_CLUSTER_PRIMARY_USERNAME="admin" \
+  -e DNS_CLUSTER_PRIMARY_PASSWORD="password" \
+  ashtonian/technitium-configurator:latest cluster-join
+
+# Check cluster state
+docker run --rm \
+  -e DNS_API_URL="http://primary-dns:5380" \
+  -e DNS_API_TOKEN="your-token" \
+  ashtonian/technitium-configurator:latest cluster-state
 ```
+
+## Configuration
+
+The configurator supports two methods of configuration, with environment variables taking precedence over YAML:
+
+1. **Environment Variables** — all settings can be provided via env vars, no config files required
+2. **YAML Configuration Files** — traditional file-based configuration, can be mixed with env vars
+
+### Environment Variables
+
+#### Connection & Auth
+| Variable | Required | Description |
+|---|---|---|
+| `DNS_API_URL` | Yes | URL of the DNS server API (e.g., `http://dns-server:5380`) |
+| `DNS_API_TOKEN` | Conditional | API token for authentication |
+| `DNS_USERNAME` | Conditional | Username for token creation, password change, and cluster commands |
+| `DNS_PASSWORD` | Conditional | Current password |
+| `DNS_NEW_PASSWORD` | For `change-password` | New password |
+
+#### Paths & Behavior
+| Variable | Default | Description |
+|---|---|---|
+| `DNS_CONFIG_PATH` | `config.yaml` | Path to DNS configuration file |
+| `DNS_TOKEN_PATH` | | Path to token file output |
+| `DNS_TIMEOUT` | `30s` | API call timeout |
+| `DNS_LOG_LEVEL` | `info` | Logging level: `debug`, `info`, `warn`, `error` |
+
+#### Kubernetes
+| Variable | Default | Description |
+|---|---|---|
+| `DNS_K8S_SECRET_NAME` | | Name of Kubernetes secret to store token in |
+| `DNS_K8S_SECRET_NAMESPACE` | `default` | Namespace for the Kubernetes secret |
+| `DNS_K8S_SECRET_KEY` | `api-token` | Key in Kubernetes secret to store token |
+
+#### Clustering
+| Variable | Description |
+|---|---|
+| `DNS_CLUSTER_DOMAIN` | Cluster domain name (required for `cluster-init`) |
+| `DNS_CLUSTER_NODE_IPS` | Comma-separated node IPs (required for `cluster-init` and `cluster-join`) |
+| `DNS_CLUSTER_PRIMARY_URL` | Primary node URL (required for `cluster-join`) |
+| `DNS_CLUSTER_PRIMARY_IP` | Primary node IP (for `cluster-join`) |
+| `DNS_CLUSTER_PRIMARY_USERNAME` | Primary node username (required for `cluster-join`) |
+| `DNS_CLUSTER_PRIMARY_PASSWORD` | Primary node password (required for `cluster-join`) |
+| `DNS_CLUSTER_IGNORE_CERT_ERRORS` | Skip TLS verification for cluster communication |
+
+### Configurator Config File
+
+The configurator itself can be configured via YAML (separate from the DNS config):
+
+```yaml
+api_url: "http://dns-server:5380"
+api_token: "your-token"
+username: "admin"
+password: "your-password"
+token_path: "/app/token.yaml"
+timeout: 30s
+log_level: "info"
+k8s_secret_name: "technitium-token"
+k8s_secret_namespace: "default"
+k8s_secret_key: "api-token"
+cluster_domain: "dns-cluster.example.com"
+cluster_node_ips: "10.0.0.1,10.0.0.2"
+```
+
+### DNS Configuration File
+
+The DNS config file defines your desired server state. See [`examples/config.yaml`](examples/config.yaml) for a full reference.
+
+```yaml
+dnsSettings:
+  dnsServerDomain: "technitium.somedomain.com"
+  recursion: Deny
+  logQueries: false
+  loggingType: FileAndConsole
+  useLocalTime: true
+  maxLogFileDays: 7
+  maxStatFileDays: 365
+  qpmLimitRequests: 0
+  qpmLimitErrors: 0
+  enableDnsOverUdpProxy:  true
+  enableDnsOverTcpProxy:  true
+  enableDnsOverHttp:      true
+  enableDnsOverTls:       true
+  enableDnsOverHttps:     true
+  enableDnsOverHttp3:     true
+  enableDnsOverQuic:      true
+  udpPayloadSize:         1232
+  resolverConcurrency:    4
+  forwarderConcurrency:   10
+  forwarderTimeout:       2000
+  forwarderRetries:       2
+  concurrentForwarding:   true
+  cacheMaximumEntries:    0
+  serveStale:             true
+  serveStaleTtl:          86400
+  cacheNegativeRecordTtl: 60
+  tsigKeys:
+    - keyName: "external-dns"
+      algorithmName: "hmac-sha256"
+      sharedSecret: "somesecret"
+
+zones:
+  - zone:  "somedomain.com"
+    type:  "Forwarder"
+    initializeForwarder: true
+    protocol: "Udp"
+    forwarder: "172.0.0.1"
+    dnssecValidation: false
+    aclSettings:
+      queryAccess: AllowOnlyPrivateNetworks
+      zoneTransfer: UseSpecifiedNetworkACL
+      zoneTransferNetworkACL: ["172.0.0.0/8"]
+      zoneTransferTsigKeyNames: ["external-dns"]
+      update: "UseSpecifiedNetworkACL"
+      updateNetworkACL:
+        - "172.0.0.0/8"
+      updateSecurityPolicies: >
+        external-dns|*.somedomain.com|ANY
+        |external-dns|somedomain.com|ANY
+
+  - zone:  "someotherdomain.com"
+    type:  "Forwarder"
+    initializeForwarder: true
+    protocol: "Https"
+    forwarder: "https://cloudflare-dns.com/dns-query"
+    dnssecValidation: true
+
+records:
+  - domain: "www.somedomain.com"   # or use "name" as alias
+    type: "A"
+    ttl: 3600
+    ipAddress: "192.168.1.1"       # or use "value" as alias for A/AAAA
+    ptr: true
+
+  - domain: "mail.somedomain.com"
+    type: "MX"
+    ttl: 3600
+    exchange: "mail.somedomain.com"
+    preference: 10
+
+  - domain: "somedomain.com"
+    type: "TXT"
+    ttl: 3600
+    text: "v=spf1 ip4:192.168.1.1 -all"
+
+apps:
+  - name: "Advanced Blocking"
+    url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v8.zip"
+    config:
+      enableBlocking: true
+      blockListUrlUpdateIntervalHours: 24
+      networkGroupMap:
+        "0.0.0.0/0":      "home"
+        "::/0":           "home"
+      groups:
+        - name: home
+          enableBlocking: true
+          allowTxtBlockingReport: true
+          blockAsNxDomain: true
+          blockingAddresses: [ "0.0.0.0", "::" ]
+          allowed: []
+          blocked: []
+          allowListUrls: []
+          allowedRegex: []
+          blockedRegex: []
+          regexAllowListUrls: []
+          regexBlockListUrls: []
+          adblockListUrls: []
+          blockListUrls:
+            - "https://raw.githubusercontent.com/xRuffKez/NRD/refs/heads/main/lists/14-day/wildcard/nrd-14day_wildcard.txt"
+            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt"
+            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt"
+            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-onlydomains.txt"
+            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nosafesearch-onlydomains.txt"
+            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/dyndns-onlydomains.txt"
+
+  - name: "Advanced Forwarding"
+    url:  "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v3.1.zip"
+    config:
+      enableForwarding: true
+      forwarders:
+        - name: "opendns"
+          dnssecValidation: true
+          forwarderProtocol: "Https"
+          forwarderAddresses:
+            - "https://doh.opendns.com/dns-query"
+        - name: "cloudflare"
+          dnssecValidation: true
+          forwarderProtocol: "Tls"
+          forwarderAddresses:
+            - "tls://1.1.1.1"
+            - "tls://1.0.0.1"
+        - name: "quad9"
+          dnssecValidation: true
+          forwarderProtocol: "Https"
+          forwarderAddresses:
+            - "https://dns.quad9.net/dns-query"
+      networkGroupMap:
+        "0.0.0.0/0": "default"
+        "::/0":      "default"
+      groups:
+        - name: "default"
+          enableForwarding: true
+          forwardings:
+            - forwarders: ["opendns", "cloudflare", "quad9"]
+              domains: ["*"]
+```
+
+### Supported Record Types
+
+A, AAAA, NS, CNAME, PTR, MX, TXT, SRV, DNAME, DS, SSHFP, TLSA, SVCB, HTTPS, URI, CAA, ANAME, NAPTR, FWD, APP
+
+Records support aliases for convenience: `name` can be used instead of `domain`, and `value` instead of `ipAddress` for A/AAAA records.
+
+### Supported Zone Types
+
+Primary, Secondary, Stub, Forwarder, SecondaryForwarder, Catalog, SecondaryCatalog
+
+Zone transfer protocols: TCP, TLS, QUIC
+
+## Supported Apps
+
+### Advanced Blocking
+
+DNS-level ad/malware blocking with:
+- Network group mapping (IPv4/IPv6 CIDR)
+- Per-group block/allow lists (URLs and regex)
+- Adblock-format list support
+- Custom blocking addresses
+
+### Advanced Forwarding
+
+DNS forwarding with:
+- Named forwarders with protocol selection (UDP, TCP, TLS, HTTPS, QUIC)
+- SOCKS5/HTTP proxy support per forwarder
+- Network group routing
+- Domain-specific forwarding rules
+- Adguard upstream support
+
+### Adding New Apps
+
+To add support for a new Technitium app:
+
+1. Add a config struct in `pkg/technitium/` with json and yaml tags. The `UnmarshalYAML` and struct tags should account for any default value handling the app expects.
+
+2. Add a case in the app configuration switch in `pkg/technitium/apps.go`:
+
+```go
+switch a.Name {
+case "Advanced Blocking":
+    cfg = new(BlockingConfig)
+case "New App":
+    cfg = new(NewAppConfig)
+}
+```
+
+## Deployment
+
+### Docker Compose
+
+See [`examples/docker-compose.yaml`](examples/docker-compose.yaml) for a complete setup with DNS server and configurator containers.
+
+### Kubernetes
+
+See [`examples/k8s.yaml`](examples/k8s.yaml) for a complete K8s deployment including:
+- ConfigMap for DNS configuration
+- ExternalSecret for credentials
+- Job with init containers for token creation, password change, and configuration
+- RBAC (Role, RoleBinding, ServiceAccount) with minimal permissions
 
 ### Volume Mounts
 
-You can mount your configuration files into the container:
+Mount configuration files into the container:
 
-- `config.yaml`: Mount to `/app/config.yaml` for DNS server configuration
-- `token.yaml`: Mount to `/app/token.yaml` if using token file storage
+- `config.yaml` → `/app/config.yaml` for DNS server configuration
+- `token.yaml` → `/app/token.yaml` if using token file storage
 
-Example with all files:
+## Building
+
+### Binary
 
 ```bash
-docker run --rm \
-  -e DNS_CONFIG_PATH="/app/config.yaml" \
-  -e DNS_TOKEN_PATH="/app/token.yaml" \
-  -v "$(pwd)/config.yaml:/app/config.yaml" \
-  -v "$(pwd)/token.yaml:/app/token.yaml" \
-  ashtonian/technitium-configurator:latest configure
+go build -o technitium-configurator
 ```
 
-### Available Commands
-
-```
-configure <config.yaml>    Configure DNS server using the provided config file
-create-token              Create an API token (saves to token.yaml if DNS_TOKEN_PATH is set)
-change-password           Change the password for the current user
-```
-
-### Examples
-
-See `examples` folder for `docker-compose.yaml` and `k8s.yaml`, as well as a configuration example `config.yaml`.
-
-#### Example Technitium Config File:
-
-```yaml
-    dnsSettings:
-      dnsServerDomain: "technitium.somedomain.com"
-      recursion: Deny
-      logQueries: false
-      loggingType: FileAndConsole
-      useLocalTime: true
-      maxLogFileDays: 7
-      maxStatFileDays: 365
-      qpmLimitRequests: 0
-      qpmLimitErrors: 0
-      enableDnsOverUdpProxy:  true
-      enableDnsOverTcpProxy:  true
-      enableDnsOverHttp:      true
-      enableDnsOverTls:       true
-      enableDnsOverHttps:     true
-      enableDnsOverHttp3:     true
-      enableDnsOverQuic:      true
-      udpPayloadSize:         1232
-      resolverConcurrency:    4
-      forwarderConcurrency:   10
-      forwarderTimeout:       2000
-      forwarderRetries:       2
-      concurrentForwarding:   true
-      cacheMaximumEntries:    0
-      serveStale:             true
-      serveStaleTtl:          86400
-      cacheNegativeRecordTtl: 60
-      tsigKeys:
-      - keyName: "external-dns"
-        algorithmName: "hmac-sha256"
-        sharedSecret: "somesecret"
-    zones:
-      - zone:  "somedomain.com"
-        type:  "Forwarder"
-        initializeForwarder: true
-        protocol: "Udp"
-        forwarder: "172.0.0.1"
-        dnssecValidation: false
-        aclSettings:
-          queryAccess: AllowOnlyPrivateNetworks
-          zoneTransfer: UseSpecifiedNetworkACL
-          zoneTransferNetworkACL: ["172.0.0.0/8"]
-          zoneTransferTsigKeyNames: ["external-dns"]
-          update: "UseSpecifiedNetworkACL"
-          updateNetworkACL:
-            - "172.0.0.0/8"
-          updateSecurityPolicies: >
-            external-dns|*.somedomain.com|ANY
-            |external-dns|somedomain.com|ANY
-      - zone:  "someotherdomain.com"
-        type:  "Forwarder"
-        initializeForwarder: true
-        protocol: "Https"
-        forwarder: "https://cloudflare-dns.com/dns-query"
-        dnssecValidation: true
-    records: [ ]
-    apps:
-      - name: "Advanced Blocking"
-        url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v8.zip"
-        config:
-          enableBlocking: true
-          blockListUrlUpdateIntervalHours: 24
-          networkGroupMap:
-            "0.0.0.0/0":      "home"
-            "::/0":           "home"
-          groups:
-            - name: home
-              enableBlocking: true
-              allowTxtBlockingReport: true
-              blockAsNxDomain: true
-              blockingAddresses: [ "0.0.0.0", "::" ]
-              allowed: []
-              blocked: []
-              allowListUrls: []
-              allowedRegex: []
-              blockedRegex: []
-              regexAllowListUrls: []
-              regexBlockListUrls: []
-              adblockListUrls: []
-              blockListUrls:
-                - "https://raw.githubusercontent.com/xRuffKez/NRD/refs/heads/main/lists/14-day/wildcard/nrd-14day_wildcard.txt"
-                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt"
-                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt"
-                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-onlydomains.txt"
-                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nosafesearch-onlydomains.txt"
-                - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/dyndns-onlydomains.txt"
-      - name: "Advanced Forwarding"
-        url:  "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v3.1.zip"
-        config:
-          enableForwarding: true
-          forwarders:
-            - name: "opendns"
-              dnssecValidation: true
-              forwarderProtocol: "Https"
-              forwarderAddresses:
-                - "https://doh.opendns.com/dns-query"
-            - name: "cloudflare"
-              dnssecValidation: true
-              forwarderProtocol: "Tls"
-              forwarderAddresses:
-                - "tls://1.1.1.1"
-                - "tls://1.0.0.1"
-            - name: "quad9"
-              dnssecValidation: true
-              forwarderProtocol: "Https"
-              forwarderAddresses:
-                - "https://dns.quad9.net/dns-query"
-          networkGroupMap:
-            "0.0.0.0/0": "default"
-            "::/0":      "default"
-          groups:
-            - name: "default"
-              enableForwarding: true
-              forwardings:
-                - forwarders: ["opendns", "cloudflare", "quad9"]
-                  domains: ["*"]
-```
-
-### Building
-
-To build the Docker image locally:
+### Docker
 
 ```bash
 docker build -t technitium-configurator .
 ```
+
+Multi-arch builds (amd64/arm64) are automated via GitHub Actions on push to `main` and tag pushes.
+
+## Testing
+
+End-to-end tests spin up a real Technitium DNS server via Docker and verify the full configurator lifecycle including idempotency:
+
+```bash
+go test -tags=e2e ./e2e
+```
+
+Requires Docker to be available.
 
 ## Limitations
 
@@ -308,16 +423,8 @@ docker build -t technitium-configurator .
 
 When re-running the configurator on existing zones:
 
-1. **Cannot Change**:
-   - Zone type (primary/secondary)
-   - Zone name
-   - Zone transfer protocol
-   - TSIG key name
-
-2. **Can Update**:
-   - Records within the zone
-   - Zone options (catalog, validation, etc.)
-   - ACL settings
+- **Cannot change**: zone type, zone name, zone transfer protocol, TSIG key name
+- **Can update**: records, zone options (catalog, validation, etc.), ACL settings
 
 ### App Management
 
@@ -328,64 +435,18 @@ When re-running the configurator on existing zones:
 ### Token Management
 
 - Creates non-expiring tokens
-- Token can be stored in:
-  - A file (if DNS_TOKEN_PATH is set)
-  - A Kubernetes secret (if DNS_K8S_SECRET_NAME is set)
-  - Displayed in logs only (if no storage is configured)
-- Will not overwrite existing valid token if saving to file or secret
-- Token must be manually deleted to create a new one when using file or secret storage
-- When using Kubernetes secrets:
-  - Secret will be created if it doesn't exist
-  - Secret will be updated if it exists but doesn't contain a token
-  - Operation will fail if secret exists and contains a valid token
-  - Requires Kubernetes cluster access (in-cluster or kubeconfig)
+- Idempotent — will not overwrite an existing valid token in file or Kubernetes secret
+- Token can be stored in a file (DNS_TOKEN_PATH), a Kubernetes secret (DNS_K8S_SECRET_NAME), or displayed in logs only
+- When using Kubernetes secrets: requires cluster access (in-cluster or kubeconfig)
 
 ### Logging
 
-The configurator uses structured logging with the following levels:
+Structured logging with four levels: `debug`, `info`, `warn`, `error`.
 
-- `debug`: Detailed information for debugging, including sensitive data like API tokens and passwords
-- `info`: General operational information (default)
-- `warn`: Warning messages for potentially harmful situations
-- `error`: Error messages for serious problems
-
-> **Warning**: Debug logging will include sensitive information such as API tokens and passwords. Use with caution in production environments.
-
-The log level can be set via (in order of precedence):
-
-1. Command line flag: `--log-level` (overrides all other settings)
+Log level precedence (highest to lowest):
+1. CLI flag: `--log-level`
 2. Environment variable: `DNS_LOG_LEVEL`
-3. Configuration file: `log_level` field
-4. Default: `info` if not specified
+3. Config file: `log_level`
+4. Default: `info`
 
-Note: The application starts with debug logging enabled to help diagnose initialization issues, then switches to the configured level after loading the configuration.
-
-Example setting log level:
-
-```bash
-# Via command line flag (highest precedence)
-docker run --rm \
-  --log-level debug \
-  ashtonian/technitium-configurator:latest configure
-
-# Via environment variable
-docker run --rm \
-  -e DNS_LOG_LEVEL="debug" \
-  ashtonian/technitium-configurator:latest configure
-
-# Via config file
-log_level: "debug"  # in config.yaml
-```
-
-## Building
-
-```bash
-go build -o technitium-configurator
-```
-
-## Wishlist TODO:
-
-* Better versioning/changelog
-* Integration/Unit tests :see_no_evil:
-* create/sync usernames + credentials
-* All the apps
+> **Warning**: Debug logging includes sensitive information such as API tokens and passwords. Use with caution in production environments.
