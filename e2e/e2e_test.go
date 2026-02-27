@@ -93,6 +93,8 @@ func TestE2EIdempotency(t *testing.T) {
 	verifyRecordExists(t, apiURL, token, zoneName, "TXT", zoneName)
 	verifyRecordExists(t, apiURL, token, "alias."+zoneName, "CNAME", zoneName)
 	verifyDNSSetting(t, apiURL, token, zoneName)
+	verifyDNSSettingsFull(t, apiURL, token)
+	verifyZoneACLSingleServer(t, apiURL, token, zoneName)
 
 	// ── RUN 2 (idempotency) ────────────────────────────────
 	t.Log("=== RUN 2: Idempotency check ===")
@@ -141,6 +143,8 @@ func TestE2EIdempotency(t *testing.T) {
 	verifyRecordExists(t, apiURL, token2, zoneName, "TXT", zoneName)
 	verifyRecordExists(t, apiURL, token2, "alias."+zoneName, "CNAME", zoneName)
 	verifyDNSSetting(t, apiURL, token2, zoneName)
+	verifyDNSSettingsFull(t, apiURL, token2)
+	verifyZoneACLSingleServer(t, apiURL, token2, zoneName)
 }
 
 func TestE2ECluster(t *testing.T) {
@@ -1004,6 +1008,56 @@ func verifyZoneACL(t *testing.T, apiURL, token, zone string) {
 	}
 
 	// Verify TSIG keys are available for this zone
+	if !sliceContains(opts.AvailableTsigKeyNames, "e2e-external-dns") {
+		t.Errorf("availableTsigKeyNames = %v, want to contain e2e-external-dns", opts.AvailableTsigKeyNames)
+	}
+
+	t.Logf("verified zone %q ACL settings (TSIG, transfer, update policies)", zone)
+}
+
+func verifyZoneACLSingleServer(t *testing.T, apiURL, token, zone string) {
+	t.Helper()
+	data := queryDNSAPI(t, apiURL, token,
+		fmt.Sprintf("/api/zones/options/get?zone=%s&includeAvailableTsigKeyNames=true", zone))
+
+	var opts struct {
+		QueryAccess              string          `json:"queryAccess"`
+		ZoneTransfer             string          `json:"zoneTransfer"`
+		ZoneTransferNetworkACL   []string        `json:"zoneTransferNetworkACL"`
+		ZoneTransferTsigKeyNames []string        `json:"zoneTransferTsigKeyNames"`
+		Update                   string          `json:"update"`
+		UpdateNetworkACL         []string        `json:"updateNetworkACL"`
+		UpdateSecurityPolicies   json.RawMessage `json:"updateSecurityPolicies"`
+		AvailableTsigKeyNames    []string        `json:"availableTsigKeyNames"`
+	}
+	if err := json.Unmarshal(data, &opts); err != nil {
+		t.Fatalf("failed to parse zone options for %s: %v", zone, err)
+	}
+
+	assertEq(t, "queryAccess", opts.QueryAccess, "AllowOnlyPrivateNetworks")
+	assertEq(t, "zoneTransfer", opts.ZoneTransfer, "UseSpecifiedNetworkACL")
+	if !sliceContains(opts.ZoneTransferNetworkACL, "172.16.0.0/12") {
+		t.Errorf("zoneTransferNetworkACL = %v, want to contain 172.16.0.0/12", opts.ZoneTransferNetworkACL)
+	}
+	if !sliceContains(opts.ZoneTransferTsigKeyNames, "e2e-external-dns") {
+		t.Errorf("zoneTransferTsigKeyNames = %v, want to contain e2e-external-dns", opts.ZoneTransferTsigKeyNames)
+	}
+	if !sliceContains(opts.ZoneTransferTsigKeyNames, "e2e-dhcp") {
+		t.Errorf("zoneTransferTsigKeyNames = %v, want to contain e2e-dhcp", opts.ZoneTransferTsigKeyNames)
+	}
+	assertEq(t, "update", opts.Update, "UseSpecifiedNetworkACL")
+	if !sliceContains(opts.UpdateNetworkACL, "172.16.0.0/12") {
+		t.Errorf("updateNetworkACL = %v, want to contain 172.16.0.0/12", opts.UpdateNetworkACL)
+	}
+
+	policiesStr := string(opts.UpdateSecurityPolicies)
+	if !strings.Contains(policiesStr, "e2e-external-dns") {
+		t.Errorf("updateSecurityPolicies missing e2e-external-dns: %s", policiesStr)
+	}
+	if !strings.Contains(policiesStr, "e2e-dhcp") {
+		t.Errorf("updateSecurityPolicies missing e2e-dhcp: %s", policiesStr)
+	}
+
 	if !sliceContains(opts.AvailableTsigKeyNames, "e2e-external-dns") {
 		t.Errorf("availableTsigKeyNames = %v, want to contain e2e-external-dns", opts.AvailableTsigKeyNames)
 	}

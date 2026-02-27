@@ -80,27 +80,40 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Apply cluster configuration (before DNS settings)
-	if dnsCfg.Cluster != nil {
-		if err := applyCluster(ctx, client, cfg, dnsCfg.Cluster); err != nil {
-			return err
-		}
-	}
-
-	// Apply DNS settings (skip if none specified, e.g. secondary cluster node)
+	// Apply DNS settings BEFORE cluster init.  Cluster init creates a
+	// cluster-catalog zone with its own TSIG key; if we set DNS settings
+	// (including the user's TSIG key list) afterward, the API rejects the
+	// call because it would remove the cluster-catalog key.  By applying
+	// DNS settings first the user's keys are set cleanly, and cluster init
+	// adds its own key on top.
+	//
+	// The merge logic below is still kept as a safety net for re-runs where
+	// the cluster already exists and has internal TSIG keys.
 	if !reflect.DeepEqual(dnsCfg.DNSSettings, technitium.DnsSettings{}) {
-		// Merge configured TSIG keys with any existing keys (e.g. cluster-internal
-		// catalog keys) so we don't accidentally remove keys the server needs.
-		if len(dnsCfg.DNSSettings.TsigKeys) > 0 {
-			if existing, err := client.GetDNSSettings(ctx); err == nil && len(existing.TsigKeys) > 0 {
-				dnsCfg.DNSSettings.TsigKeys = mergeTsigKeys(existing.TsigKeys, dnsCfg.DNSSettings.TsigKeys)
-			}
+		// Merge configured TSIG keys with any existing server keys (e.g.
+		// cluster-internal catalog keys from a previous cluster init) so we
+		// don't accidentally remove keys the server needs on re-run.
+		existing, err := client.GetDNSSettings(ctx)
+		if err != nil {
+			slog.Warn("failed to fetch existing DNS settings for TSIG merge, proceeding without merge", "error", err)
+		}
+		if existing != nil && len(existing.TsigKeys) > 0 {
+			cfgCount := len(dnsCfg.DNSSettings.TsigKeys)
+			dnsCfg.DNSSettings.TsigKeys = mergeTsigKeys(existing.TsigKeys, dnsCfg.DNSSettings.TsigKeys)
+			slog.Debug("merged TSIG keys", "server", len(existing.TsigKeys), "configured", cfgCount, "merged", len(dnsCfg.DNSSettings.TsigKeys))
 		}
 
 		if err := client.SetDNSSettings(ctx, dnsCfg.DNSSettings); err != nil {
 			return fmt.Errorf("failed to set DNS settings: %w", err)
 		}
 		slog.Info("DNS settings configured", "server", cfg.APIURL)
+	}
+
+	// Apply cluster configuration AFTER DNS settings (see comment above).
+	if dnsCfg.Cluster != nil {
+		if err := applyCluster(ctx, client, cfg, dnsCfg.Cluster); err != nil {
+			return err
+		}
 	}
 
 	// Configure zones

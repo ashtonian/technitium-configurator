@@ -5,7 +5,9 @@ metadata:
   name: technitium-config
 data:
   config.yaml: |-
-    # Optional: cluster configuration (applied before DNS settings).
+    # Optional: cluster configuration (applied after DNS settings).
+    # DNS settings are applied first so TSIG keys are set cleanly
+    # before cluster init adds its own internal keys.
     # Only the primary needs dnsSettings/zones/records below — they
     # replicate to secondary nodes. Secondary config is cluster-only.
     #

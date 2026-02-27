@@ -1,4 +1,6 @@
-# Cluster configuration (applied before DNS settings).
+# Cluster configuration (applied after DNS settings).
+# DNS settings are applied first so TSIG keys are set cleanly before
+# cluster init adds its own internal keys.
 # Primary node — include DNS settings, zones, and records below.
 # Secondary node — use cluster-only config (no dnsSettings/zones/records
 # needed; they replicate from the primary).

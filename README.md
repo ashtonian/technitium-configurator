@@ -95,7 +95,7 @@ docker run --rm \
 
 ### 4. Set Up a Cluster
 
-Cluster configuration is declarative — add a `cluster` section to your DNS config YAML and it will be applied during `configure`. Only the primary node needs DNS settings, zones, and records; they replicate to secondary nodes via the cluster.
+Cluster configuration is declarative — add a `cluster` section to your DNS config YAML and it will be applied during `configure`. DNS settings (including TSIG keys) are applied first, then cluster init/join, followed by zones and records. Only the primary node needs DNS settings, zones, and records; they replicate to secondary nodes via the cluster.
 
 ```yaml
 # Step 1: Configure the primary node first (cluster init + full DNS config)
@@ -210,7 +210,9 @@ k8s_secret_key: "api-token"
 The DNS config file defines your desired server state. See [`examples/config.yaml`](examples/config.yaml) for a full reference.
 
 ```yaml
-# Optional: cluster configuration (applied before DNS settings).
+# Optional: cluster configuration (applied after DNS settings).
+# DNS settings are applied first so TSIG keys are set cleanly before
+# cluster init adds its own internal keys.
 # Only the primary needs dnsSettings/zones/records — they replicate
 # to secondary nodes. Secondary config is cluster-only.
 #
@@ -484,7 +486,7 @@ When re-running the configurator on existing zones:
 
 ### Cluster Management
 
-- Cluster init/join is applied during `configure` before DNS settings, zones, and records
+- DNS settings are applied first, then cluster init/join, followed by zones and records
 - `primaryURL` must use a hostname (not a raw IP) — Technitium creates a `DomainEndPoint` from the URL hostname
 - `primaryIP` should be provided when the primary hostname can't be resolved by the secondary's DNS (e.g., Docker service names)
 - After cluster operations, the configurator waits for the server to stabilize and re-authenticates before continuing

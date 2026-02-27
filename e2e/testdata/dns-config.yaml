@@ -22,7 +22,6 @@ dnsSettings:
   serveStale: true
   serveStaleTtl: 86400
   cacheNegativeRecordTtl: 60
-  cacheMaximumEntries: 0
   enableDnsOverHttp: true
   enableDnsOverTls: true
   enableDnsOverHttps: true
@@ -33,15 +32,53 @@ dnsSettings:
   useLocalTime: true
   maxLogFileDays: 7
   maxStatFileDays: 365
+  recursion: "Allow"
+  qpmPrefixLimitsIPv4:
+    - prefix: 24
+      udpLimit: 600
+      tcpLimit: 100
+  qpmPrefixLimitsIPv6:
+    - prefix: 56
+      udpLimit: 600
+      tcpLimit: 100
+  qpmLimitSampleMinutes: 5
+  cachePrefetchEligibility: 2
+  cachePrefetchTrigger: 9
+  cachePrefetchSampleIntervalInMinutes: 5
+  cachePrefetchSampleEligibilityHitsPerHour: 30
+  cacheMinimumRecordTtl: 60
+  cacheMaximumRecordTtl: 86400
+  cacheFailureRecordTtl: 30
+  cacheMaximumEntries: 50000
+  saveCache: true
+  serveStaleAnswerTtl: 30
+  serveStaleMaxWaitTime: 1800
+  enableDnsOverUdpProxy: true
+  enableDnsOverTcpProxy: true
+  enableDnsOverHttp3: true
+  tsigKeys:
+    - keyName: "e2e-external-dns"
+      algorithmName: "hmac-sha256"
+      sharedSecret: "cHJldGVuZHRoaXNpc2FyZWFsc2VjcmV0a2V5YmFzZTY0"
+    - keyName: "e2e-dhcp"
+      algorithmName: "hmac-sha256"
+      sharedSecret: "YW5vdGhlcnByZXRlbmRzZWNyZXRrZXlmb3JkaGNwdGVzdA=="
 
 zones:
   - zone: "e2e-test.local"
     type: "Primary"
     aclSettings:
-      queryAccess: "Allow"
-      zoneTransfer: "Deny"
-      notify: "None"
-      update: "Deny"
+      queryAccess: "AllowOnlyPrivateNetworks"
+      zoneTransfer: "UseSpecifiedNetworkACL"
+      zoneTransferNetworkACL:
+        - "172.16.0.0/12"
+      zoneTransferTsigKeyNames:
+        - "e2e-external-dns"
+        - "e2e-dhcp"
+      update: "UseSpecifiedNetworkACL"
+      updateNetworkACL:
+        - "172.16.0.0/12"
+      updateSecurityPolicies: "e2e-external-dns|*.e2e-test.local|ANY|e2e-dhcp|*.e2e-test.local|ANY"
 
 records:
   - domain: "www.e2e-test.local"
