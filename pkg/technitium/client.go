@@ -134,11 +134,11 @@ func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiRes
 		qs.Set("token", c.Token)
 	}
 
-	url := c.normalizePath(path)
+	u := c.normalizePath(path)
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		url,
+		u,
 		strings.NewReader(qs.Encode()),
 	)
 	if err != nil {
@@ -155,12 +155,12 @@ func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiRes
 }
 
 func parse(resp *http.Response) (*apiResp, error) {
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	var r apiResp
-	defer resp.Body.Close()
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func (c *Client) CreateToken(ctx context.Context, username, password, tokenName 
 		return nil, err
 	}
 
-	if tokenResp.Status != "ok" {
+	if tokenResp.Status != "" && tokenResp.Status != "ok" {
 		return nil, fmt.Errorf("create token: %s", tokenResp.Status)
 	}
 
@@ -284,7 +284,7 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 		return nil, err
 	}
 
-	if loginResp.Status != "ok" {
+	if loginResp.Status != "" && loginResp.Status != "ok" {
 		return nil, fmt.Errorf("login: %s", loginResp.Status)
 	}
 
@@ -294,11 +294,13 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 	return &loginResp, nil
 }
 
-func (c *Client) ChangePassword(ctx context.Context, newPassword string) error {
+func (c *Client) ChangePassword(ctx context.Context, currentPassword, newPassword string) error {
 	params := struct {
-		Pass string `url:"pass"`
+		Pass    string `url:"pass"`
+		NewPass string `url:"newPass"`
 	}{
-		Pass: newPassword,
+		Pass:    currentPassword,
+		NewPass: newPassword,
 	}
 
 	_, err := c.callGET(ctx, "/api/user/changePassword", params)

@@ -28,7 +28,8 @@ type ClientConfig struct {
 	Username    string        `yaml:"username" env:"DNS_USERNAME"`
 	Password    string        `yaml:"password" env:"DNS_PASSWORD"`
 	NewPassword string        `yaml:"new_password" env:"DNS_NEW_PASSWORD"`
-	ConfigPath  string        `yaml:"-" env:"DNS_CONFIG_PATH"` // Not stored in YAML, set via flag or env
+	ConfigPath    string        `yaml:"-" env:"DNS_CONFIG_PATH"` // Not stored in YAML, set via flag or env
+	ConfigPathSet bool          `yaml:"-"`                       // Tracks whether ConfigPath was explicitly set by a flag
 	TokenPath   string        `yaml:"token_path" env:"DNS_TOKEN_PATH"`
 	Timeout     time.Duration `yaml:"timeout" env:"DNS_TIMEOUT"`
 	LogLevel    LogLevel      `yaml:"log_level" env:"DNS_LOG_LEVEL"`
@@ -36,6 +37,14 @@ type ClientConfig struct {
 	K8sSecretName      string `yaml:"k8s_secret_name" env:"DNS_K8S_SECRET_NAME"`           // Name of the secret to store token in
 	K8sSecretNamespace string `yaml:"k8s_secret_namespace" env:"DNS_K8S_SECRET_NAMESPACE"` // Namespace of the secret (default: default)
 	K8sSecretKey       string `yaml:"k8s_secret_key" env:"DNS_K8S_SECRET_KEY"`             // Key in the secret to store token (default: token)
+	// Cluster configuration
+	ClusterDomain          string `yaml:"cluster_domain" env:"DNS_CLUSTER_DOMAIN"`
+	ClusterNodeIPs         string `yaml:"cluster_node_ips" env:"DNS_CLUSTER_NODE_IPS"`
+	ClusterPrimaryURL      string `yaml:"cluster_primary_url" env:"DNS_CLUSTER_PRIMARY_URL"`
+	ClusterPrimaryIP       string `yaml:"cluster_primary_ip" env:"DNS_CLUSTER_PRIMARY_IP"`
+	ClusterPrimaryUsername string `yaml:"cluster_primary_username" env:"DNS_CLUSTER_PRIMARY_USERNAME"`
+	ClusterPrimaryPassword string `yaml:"cluster_primary_password" env:"DNS_CLUSTER_PRIMARY_PASSWORD"`
+	ClusterIgnoreCertErr   bool   `yaml:"cluster_ignore_cert_errors" env:"DNS_CLUSTER_IGNORE_CERT_ERRORS"`
 }
 
 // DefaultConfig returns a new ClientConfig with default values
@@ -103,9 +112,11 @@ func (c *ClientConfig) LoadFromEnv() error {
 					return fmt.Errorf("invalid timeout value: %w", err)
 				}
 				val.Field(i).Set(reflect.ValueOf(duration))
+			} else if field.Type.Kind() == reflect.Bool {
+				val.Field(i).SetBool(envVal == "true" || envVal == "1")
 			} else {
-				// Special handling for ConfigPath - only set if not already set by flag
-				if field.Name == "ConfigPath" && c.ConfigPath != "" && c.ConfigPath != "config.yaml" {
+				// Only skip env override if ConfigPath was explicitly set by a flag
+				if field.Name == "ConfigPath" && c.ConfigPathSet {
 					continue // Skip if already set by flag
 				}
 				val.Field(i).SetString(envVal)
@@ -137,6 +148,36 @@ func (c *ClientConfig) Validate(command string) error {
 		}
 		if command == "change-password" && c.NewPassword == "" {
 			return fmt.Errorf("new password is required (set DNS_NEW_PASSWORD or new_password in config)")
+		}
+	case "cluster-init":
+		if c.Username == "" || c.Password == "" {
+			return fmt.Errorf("username and password are required (set DNS_USERNAME/DNS_PASSWORD)")
+		}
+		if c.ClusterDomain == "" {
+			return fmt.Errorf("cluster domain is required (set DNS_CLUSTER_DOMAIN)")
+		}
+		if c.ClusterNodeIPs == "" {
+			return fmt.Errorf("cluster node IPs are required (set DNS_CLUSTER_NODE_IPS)")
+		}
+	case "cluster-join":
+		if c.Username == "" || c.Password == "" {
+			return fmt.Errorf("username and password are required (set DNS_USERNAME/DNS_PASSWORD)")
+		}
+		if c.ClusterNodeIPs == "" {
+			return fmt.Errorf("cluster node IPs are required (set DNS_CLUSTER_NODE_IPS)")
+		}
+		if c.ClusterPrimaryURL == "" {
+			return fmt.Errorf("cluster primary URL is required (set DNS_CLUSTER_PRIMARY_URL)")
+		}
+		if c.ClusterPrimaryUsername == "" {
+			return fmt.Errorf("cluster primary username is required (set DNS_CLUSTER_PRIMARY_USERNAME)")
+		}
+		if c.ClusterPrimaryPassword == "" {
+			return fmt.Errorf("cluster primary password is required (set DNS_CLUSTER_PRIMARY_PASSWORD)")
+		}
+	case "cluster-state":
+		if c.APIToken == "" && (c.Username == "" || c.Password == "") {
+			return fmt.Errorf("either API token (DNS_API_TOKEN) or username/password (DNS_USERNAME/DNS_PASSWORD) is required")
 		}
 	}
 

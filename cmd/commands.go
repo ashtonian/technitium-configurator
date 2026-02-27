@@ -36,6 +36,21 @@ var Commands = map[string]Command{
 		Description: "Change the password for the current user",
 		Run:         runChangePassword,
 	},
+	"cluster-init": {
+		Name:        "cluster-init",
+		Description: "Initialize clustering on the primary node",
+		Run:         runClusterInit,
+	},
+	"cluster-join": {
+		Name:        "cluster-join",
+		Description: "Join this node to an existing cluster as secondary",
+		Run:         runClusterJoin,
+	},
+	"cluster-state": {
+		Name:        "cluster-state",
+		Description: "Display the current cluster state",
+		Run:         runClusterState,
+	},
 }
 
 // RunCommand executes the specified command with the given configuration
@@ -75,7 +90,7 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 	if err := client.SetDNSSettings(ctx, dnsCfg.DNSSettings); err != nil {
 		return fmt.Errorf("failed to set DNS settings: %w", err)
 	}
-	slog.Info("DNS settings configured")
+	slog.Info("DNS settings configured", "server", cfg.APIURL)
 
 	// Configure zones
 	for _, z := range dnsCfg.Zones {
@@ -116,11 +131,18 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 			opts.ACLSettings = *z.ACLSettings
 		}
 
-		// api doesn't like immediate updates to zone sometimes..
-		time.Sleep(1 * time.Second)
-
-		if _, err := client.SetZoneOptions(ctx, opts); err != nil {
-			slog.Error("Failed to update zone options", "zone", z.Zone, "error", err)
+		// Retry zone options update — the API sometimes rejects immediate updates
+		var zoneOptsErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				time.Sleep(1 * time.Second)
+			}
+			if _, zoneOptsErr = client.SetZoneOptions(ctx, opts); zoneOptsErr == nil {
+				break
+			}
+		}
+		if zoneOptsErr != nil {
+			slog.Error("Failed to update zone options", "zone", z.Zone, "error", zoneOptsErr)
 		} else {
 			slog.Info("Zone configured", "zone", z.Zone)
 		}
@@ -167,7 +189,7 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 		}
 	}
 
-	slog.Info("Configuration complete!")
+	slog.Info("Configuration complete")
 	return nil
 }
 
@@ -251,10 +273,104 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
 	client := technitium.NewClient(cfg)
 
-	if err := client.ChangePassword(ctx, cfg.NewPassword); err != nil {
+	if err := client.ChangePassword(ctx, cfg.Password, cfg.NewPassword); err != nil {
 		return fmt.Errorf("failed to change password: %w", err)
 	}
 
 	slog.Info("Password changed successfully")
+	return nil
+}
+
+func runClusterInit(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+	client := technitium.NewClient(cfg)
+
+	state, err := client.GetClusterState(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster state: %w", err)
+	}
+
+	if state.ClusterInitialized {
+		slog.Info("Cluster already initialized",
+			"domain", state.ClusterDomain,
+			"nodes", len(state.Nodes))
+		return nil
+	}
+
+	state, err = client.ClusterInit(ctx, cfg.ClusterDomain, cfg.ClusterNodeIPs)
+	if err != nil {
+		return fmt.Errorf("failed to initialize cluster: %w", err)
+	}
+
+	slog.Info("Cluster initialized successfully",
+		"domain", state.ClusterDomain,
+		"nodes", len(state.Nodes))
+	for _, n := range state.Nodes {
+		slog.Info("Cluster node", "name", n.Name, "type", n.Type, "state", n.State)
+	}
+	return nil
+}
+
+func runClusterJoin(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+	client := technitium.NewClient(cfg)
+
+	state, err := client.GetClusterState(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster state: %w", err)
+	}
+
+	if state.ClusterInitialized {
+		slog.Info("Node already part of a cluster",
+			"domain", state.ClusterDomain,
+			"nodes", len(state.Nodes))
+		return nil
+	}
+
+	req := technitium.ClusterJoinRequest{
+		SecondaryNodeIPs:    cfg.ClusterNodeIPs,
+		PrimaryNodeURL:      cfg.ClusterPrimaryURL,
+		PrimaryNodeIP:       cfg.ClusterPrimaryIP,
+		PrimaryNodeUsername: cfg.ClusterPrimaryUsername,
+		PrimaryNodePassword: cfg.ClusterPrimaryPassword,
+		IgnoreCertErrors:    cfg.ClusterIgnoreCertErr,
+	}
+
+	state, err = client.ClusterJoin(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to join cluster: %w", err)
+	}
+
+	slog.Info("Successfully joined cluster",
+		"domain", state.ClusterDomain,
+		"nodes", len(state.Nodes))
+	for _, n := range state.Nodes {
+		slog.Info("Cluster node", "name", n.Name, "type", n.Type, "state", n.State)
+	}
+	return nil
+}
+
+func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+	client := technitium.NewClient(cfg)
+
+	state, err := client.GetClusterState(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster state: %w", err)
+	}
+
+	slog.Info("Cluster state",
+		"initialized", state.ClusterInitialized,
+		"domain", state.ClusterDomain,
+		"version", state.Version,
+		"nodes", len(state.Nodes))
+
+	for _, n := range state.Nodes {
+		slog.Info("Cluster node",
+			"id", n.ID,
+			"name", n.Name,
+			"type", n.Type,
+			"state", n.State,
+			"url", n.URL,
+			"lastSeen", n.LastSeen)
+	}
+
 	return nil
 }

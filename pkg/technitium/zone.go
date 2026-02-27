@@ -21,7 +21,6 @@ const (
 	ZTPTcp                 ZoneTransferProtocol = "Tcp"
 	ZTPTls                 ZoneTransferProtocol = "Tls"
 	ZTPQuic                ZoneTransferProtocol = "Quic"
-	ProxyNone              ProxyType            = "NoProxy"
 )
 
 type ZoneCreateRequest struct {

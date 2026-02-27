@@ -71,6 +71,13 @@ func main() {
 	cfg.ConfigPath = *configPath
 	cfg.TokenPath = *tokenPath
 
+	// Mark ConfigPath as explicitly set if the flag was provided
+	root.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			cfg.ConfigPathSet = true
+		}
+	})
+
 	// Load from file if it exists
 	if err := cfg.LoadFromFile(cfg.ConfigPath); err != nil {
 		slog.Warn("Failed to load config from file", "error", err, "path", cfg.ConfigPath)

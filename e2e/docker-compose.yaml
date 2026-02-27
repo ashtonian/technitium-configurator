@@ -1,0 +1,15 @@
+services:
+  dns:
+    image: technitium/dns-server:latest
+    ports:
+      - "${DNS_PORT}:5380/tcp"
+    environment:
+      - DNS_SERVER_DOMAIN=e2e-test.local
+    tmpfs:
+      - /etc/dns
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/5380'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s

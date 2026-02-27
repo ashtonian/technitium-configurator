@@ -1,0 +1,38 @@
+dnsSettings:
+  dnsServerDomain: "e2e-test.local"
+  dnsServerLocalEndPoints:
+    - "0.0.0.0:53"
+  defaultRecordTtl: 300
+  dnssecValidation: false
+  enableBlocking: false
+
+zones:
+  - zone: "e2e-test.local"
+    type: "Primary"
+    aclSettings:
+      queryAccess: "Allow"
+      zoneTransfer: "Deny"
+      notify: "None"
+      update: "Deny"
+
+records:
+  - domain: "www.e2e-test.local"
+    type: "A"
+    ttl: 300
+    ipAddress: "10.0.0.1"
+
+  - domain: "e2e-test.local"
+    type: "MX"
+    ttl: 300
+    exchange: "mail.e2e-test.local"
+    preference: 10
+
+  - domain: "e2e-test.local"
+    type: "TXT"
+    ttl: 300
+    text: "v=spf1 -all"
+
+  - domain: "alias.e2e-test.local"
+    type: "CNAME"
+    ttl: 300
+    cname: "www.e2e-test.local"

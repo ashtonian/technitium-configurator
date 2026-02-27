@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -79,7 +80,7 @@ func (t *LoggedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.logger.DebugContext(req.Context(),
 			"http request error",
 			"method", req.Method,
-			"url", req.URL.String(),
+			"url", redactURL(req.URL.String()),
 			"err", err,
 			"duration", elapsed,
 			"req_body", asValue(req.Header, reqBodyBytes),
@@ -93,7 +94,7 @@ func (t *LoggedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.logger.DebugContext(req.Context(),
 		"http request",
 		"method", req.Method,
-		"url", req.URL.String(),
+		"url", redactURL(req.URL.String()),
 		"status", resp.StatusCode,
 		"duration", elapsed,
 		"req_headers", req.Header,
@@ -151,4 +152,18 @@ func asValue(h http.Header, body []byte) any {
 func isJSONContentType(ct string) bool {
 	ct = strings.ToLower(ct)
 	return strings.Contains(ct, "application/json") || strings.HasSuffix(ct, "+json")
+}
+
+// redactURL replaces the token query parameter value with "REDACTED".
+func redactURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	q := parsed.Query()
+	if q.Has("token") {
+		q.Set("token", "REDACTED")
+		parsed.RawQuery = q.Encode()
+	}
+	return parsed.String()
 }
