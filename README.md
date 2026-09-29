@@ -28,7 +28,16 @@ DNS is *critical* and therefore its configuration should be easily repeatable. T
 
 ## Compatibility
 
-Tested against **Technitium DNS Server v14.x** (v14.3+). Cluster features (init, join, setOptions) require v14.0+. Older versions may work for basic DNS settings, zones, and records but are not officially supported.
+Tested against **Technitium DNS Server v15.5.1**, and v14.3+ before it; the e2e suite pins the server image. Cluster features (init, join, setOptions) require v14.0+. Older versions may work for basic DNS settings, zones, and records but are not officially supported.
+
+v15 changes that affect configuration:
+
+| Setting | v14 | v15 |
+|---|---|---|
+| Reverse-proxy ACL for the DNS optional protocols | `reverseProxyNetworkACL` | `dnsReverseProxyNetworkACL` |
+| `cachePrefetchSampleIntervalInMinutes`, `cachePrefetchSampleEligibilityHitsPerHour` | Auto Prefetch | Removed with Auto Prefetch; the server ignores them |
+
+Every node of a Technitium cluster must run the same major version.
 
 ## Available Commands
 

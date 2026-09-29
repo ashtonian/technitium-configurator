@@ -236,8 +236,6 @@ dnsSettings:
   qpmLimitSampleMinutes: 5
   cachePrefetchEligibility: 2
   cachePrefetchTrigger: 9
-  cachePrefetchSampleIntervalInMinutes: 5
-  cachePrefetchSampleEligibilityHitsPerHour: 30
   cacheMinimumRecordTtl: 60
   cacheMaximumRecordTtl: 86400
   cacheFailureRecordTtl: 30
@@ -859,33 +857,31 @@ func verifyDNSSettingsFull(t *testing.T, apiURL, token string) {
 	data := queryDNSAPI(t, apiURL, token, "/api/settings/get")
 
 	var settings struct {
-		Recursion             string `json:"recursion"`
-		QpmPrefixLimitsIPv4   []struct {
+		Recursion           string `json:"recursion"`
+		QpmPrefixLimitsIPv4 []struct {
 			Prefix   int `json:"prefix"`
 			UdpLimit int `json:"udpLimit"`
 			TcpLimit int `json:"tcpLimit"`
 		} `json:"qpmPrefixLimitsIPv4"`
-		QpmPrefixLimitsIPv6   []struct {
+		QpmPrefixLimitsIPv6 []struct {
 			Prefix   int `json:"prefix"`
 			UdpLimit int `json:"udpLimit"`
 			TcpLimit int `json:"tcpLimit"`
 		} `json:"qpmPrefixLimitsIPv6"`
-		QpmLimitSampleMinutes int `json:"qpmLimitSampleMinutes"`
-		CachePrefetchEligibility                  int    `json:"cachePrefetchEligibility"`
-		CachePrefetchTrigger                      int    `json:"cachePrefetchTrigger"`
-		CachePrefetchSampleIntervalInMinutes      int    `json:"cachePrefetchSampleIntervalInMinutes"`
-		CachePrefetchSampleEligibilityHitsPerHour int    `json:"cachePrefetchSampleEligibilityHitsPerHour"`
-		CacheMinimumRecordTtl                     int    `json:"cacheMinimumRecordTtl"`
-		CacheMaximumRecordTtl                     int    `json:"cacheMaximumRecordTtl"`
-		CacheFailureRecordTtl                     int    `json:"cacheFailureRecordTtl"`
-		CacheMaximumEntries                       int    `json:"cacheMaximumEntries"`
-		SaveCache                                 bool   `json:"saveCache"`
-		ServeStaleAnswerTtl                       int    `json:"serveStaleAnswerTtl"`
-		ServeStaleMaxWaitTime                     int    `json:"serveStaleMaxWaitTime"`
-		EnableDnsOverUdpProxy                     bool   `json:"enableDnsOverUdpProxy"`
-		EnableDnsOverTcpProxy                     bool   `json:"enableDnsOverTcpProxy"`
-		EnableDnsOverHttp3                        bool   `json:"enableDnsOverHttp3"`
-		TsigKeys                                  []struct {
+		QpmLimitSampleMinutes    int  `json:"qpmLimitSampleMinutes"`
+		CachePrefetchEligibility int  `json:"cachePrefetchEligibility"`
+		CachePrefetchTrigger     int  `json:"cachePrefetchTrigger"`
+		CacheMinimumRecordTtl    int  `json:"cacheMinimumRecordTtl"`
+		CacheMaximumRecordTtl    int  `json:"cacheMaximumRecordTtl"`
+		CacheFailureRecordTtl    int  `json:"cacheFailureRecordTtl"`
+		CacheMaximumEntries      int  `json:"cacheMaximumEntries"`
+		SaveCache                bool `json:"saveCache"`
+		ServeStaleAnswerTtl      int  `json:"serveStaleAnswerTtl"`
+		ServeStaleMaxWaitTime    int  `json:"serveStaleMaxWaitTime"`
+		EnableDnsOverUdpProxy    bool `json:"enableDnsOverUdpProxy"`
+		EnableDnsOverTcpProxy    bool `json:"enableDnsOverTcpProxy"`
+		EnableDnsOverHttp3       bool `json:"enableDnsOverHttp3"`
+		TsigKeys                 []struct {
 			KeyName       string `json:"keyName"`
 			AlgorithmName string `json:"algorithmName"`
 		} `json:"tsigKeys"`
@@ -930,8 +926,6 @@ func verifyDNSSettingsFull(t *testing.T, apiURL, token string) {
 	}
 	assertEq(t, "cachePrefetchEligibility", settings.CachePrefetchEligibility, 2)
 	assertEq(t, "cachePrefetchTrigger", settings.CachePrefetchTrigger, 9)
-	assertEq(t, "cachePrefetchSampleIntervalInMinutes", settings.CachePrefetchSampleIntervalInMinutes, 5)
-	assertEq(t, "cachePrefetchSampleEligibilityHitsPerHour", settings.CachePrefetchSampleEligibilityHitsPerHour, 30)
 	assertEq(t, "cacheMinimumRecordTtl", settings.CacheMinimumRecordTtl, 60)
 	assertEq(t, "cacheMaximumRecordTtl", settings.CacheMaximumRecordTtl, 86400)
 	assertEq(t, "cacheFailureRecordTtl", settings.CacheFailureRecordTtl, 30)
@@ -968,14 +962,14 @@ func verifyZoneACL(t *testing.T, apiURL, token, zone string) {
 		fmt.Sprintf("/api/zones/options/get?zone=%s&includeAvailableTsigKeyNames=true", zone))
 
 	var opts struct {
-		QueryAccess              string            `json:"queryAccess"`
-		ZoneTransfer             string            `json:"zoneTransfer"`
-		ZoneTransferNetworkACL   []string          `json:"zoneTransferNetworkACL"`
-		ZoneTransferTsigKeyNames []string          `json:"zoneTransferTsigKeyNames"`
-		Update                   string            `json:"update"`
-		UpdateNetworkACL         []string          `json:"updateNetworkACL"`
-		UpdateSecurityPolicies   json.RawMessage   `json:"updateSecurityPolicies"`
-		AvailableTsigKeyNames    []string          `json:"availableTsigKeyNames"`
+		QueryAccess              string          `json:"queryAccess"`
+		ZoneTransfer             string          `json:"zoneTransfer"`
+		ZoneTransferNetworkACL   []string        `json:"zoneTransferNetworkACL"`
+		ZoneTransferTsigKeyNames []string        `json:"zoneTransferTsigKeyNames"`
+		Update                   string          `json:"update"`
+		UpdateNetworkACL         []string        `json:"updateNetworkACL"`
+		UpdateSecurityPolicies   json.RawMessage `json:"updateSecurityPolicies"`
+		AvailableTsigKeyNames    []string        `json:"availableTsigKeyNames"`
 	}
 	if err := json.Unmarshal(data, &opts); err != nil {
 		t.Fatalf("failed to parse zone options for %s: %v", zone, err)

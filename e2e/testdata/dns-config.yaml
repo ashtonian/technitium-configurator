@@ -44,8 +44,6 @@ dnsSettings:
   qpmLimitSampleMinutes: 5
   cachePrefetchEligibility: 2
   cachePrefetchTrigger: 9
-  cachePrefetchSampleIntervalInMinutes: 5
-  cachePrefetchSampleEligibilityHitsPerHour: 30
   cacheMinimumRecordTtl: 60
   cacheMaximumRecordTtl: 86400
   cacheFailureRecordTtl: 30

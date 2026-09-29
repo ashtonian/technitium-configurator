@@ -1,3 +1,10 @@
+## Unreleased
+
+- Technitium DNS Server v15 support, verified by the e2e suite against 15.5.1 (single node and cluster):
+  - `dnsReverseProxyNetworkACL`, v15's name for `reverseProxyNetworkACL`.
+  - The e2e compose files pin `technitium/dns-server:15.5.1` instead of `latest`, so a new server release cannot change the test baseline silently.
+  - The Auto Prefetch sampling settings are documented as v14-only; v15 removed the feature.
+
 ## v2.0.0
 
 v2.0 is a major release that adds DNS cluster orchestration, a comprehensive DNS settings API, a new CLI architecture, Kubernetes secret management, end-to-end tests, and numerous bug fixes.
