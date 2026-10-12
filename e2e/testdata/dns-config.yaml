@@ -7,10 +7,8 @@ dnsSettings:
   defaultSoaRecordTtl: 900
   dnssecValidation: false
   enableBlocking: false
-  preferIPv6: false
+  ipv6Mode: "Disabled"
   udpPayloadSize: 1232
-  qpmLimitRequests: 0
-  qpmLimitErrors: 0
   clientTimeout: 2000
   resolverRetries: 2
   resolverTimeout: 2000
@@ -27,11 +25,10 @@ dnsSettings:
   enableDnsOverHttps: true
   enableDnsOverQuic: true
   loggingType: "FileAndConsole"
-  enableLogging: true
   logQueries: false
   useLocalTime: true
   maxLogFileDays: 7
-  maxStatFileDays: 365
+  maxStatFileDays: 0
   recursion: "Allow"
   qpmPrefixLimitsIPv4:
     - prefix: 24
@@ -81,7 +78,8 @@ zones:
 records:
   - domain: "www.e2e-test.local"
     type: "A"
-    ttl: 300
+    ttl: 120
+    comments: "e2e web"
     ipAddress: "10.0.0.1"
 
   - domain: "e2e-test.local"

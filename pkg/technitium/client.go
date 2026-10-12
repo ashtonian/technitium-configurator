@@ -6,153 +6,187 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/google/go-querystring/query"
 )
 
-// Client represents a Technitium DNS Server API client
+// maxResponseBytes bounds how much of a response body is read. Full-zone
+// record listings are the largest responses the client requests.
+const maxResponseBytes = 64 << 20
+
+// Client is a Technitium DNS Server HTTP API client. It does not
+// authenticate on construction; call Login or SetToken first.
 type Client struct {
-	Base      string
-	Token     string
-	hc        *http.Client
-	transport http.RoundTripper
-	timeout   time.Duration
+	base  string
+	token string
+	hc    *http.Client
 }
 
-// NewClient creates a new Technitium DNS Server API client with the given configuration
+// NewClient returns a client for cfg.APIURL.
 func NewClient(cfg *ClientConfig) (*Client, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
-
-	t := NewLoggedTransport()
-	client := &Client{
-		Base:  strings.TrimRight(cfg.APIURL, "/"),
-		Token: cfg.APIToken,
+	// Errors never include the URL: it may carry credentials.
+	u, err := url.Parse(strings.TrimRight(cfg.APIURL, "/"))
+	switch {
+	case err != nil:
+		return nil, errors.New("API URL is not a valid URL")
+	case u.Scheme != "http" && u.Scheme != "https":
+		return nil, errors.New("API URL must use http or https")
+	case u.Host == "":
+		return nil, errors.New("API URL has no host")
+	case u.User != nil:
+		return nil, errors.New("API URL must not contain credentials; use DNS_API_TOKEN or DNS_USERNAME and DNS_PASSWORD")
+	case u.RawQuery != "" || u.Fragment != "":
+		return nil, errors.New("API URL must not contain a query or fragment")
+	}
+	return &Client{
+		base: u.String(),
 		hc: &http.Client{
-			Transport: t,
+			Transport: NewLoggedTransport(),
 			Timeout:   cfg.Timeout,
+			// A followed redirect turns a POST into a GET and drops its form.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		transport: t,
-		timeout:   cfg.Timeout,
-	}
-
-	// If we have username/password but no token, try to login
-	if cfg.Username != "" && cfg.Password != "" && cfg.APIToken == "" {
-		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
-		defer cancel()
-
-		if _, err := client.Login(ctx, cfg.Username, cfg.Password); err != nil {
-			return nil, fmt.Errorf("failed to login: %w", err)
-		}
-	}
-
-	return client, nil
+	}, nil
 }
 
-// normalizePath ensures consistent path handling by:
-// 1. Removing leading slashes from the path
-// 2. Joining base and path with a single slash while preserving URL protocol
-func (c *Client) normalizePath(p string) string {
-	p = strings.TrimLeft(p, "/")
-	baseURL, err := url.Parse(c.Base)
-	if err != nil {
-		return c.Base + "/" + p
-	}
-	joined, err := url.JoinPath(baseURL.String(), p)
-	if err != nil {
-		return c.Base + "/" + p
-	}
-	return joined
+// SetToken sets the session or API token sent with every request.
+func (c *Client) SetToken(token string) { c.token = token }
+
+// Token returns the current session or API token.
+func (c *Client) Token() string { return c.token }
+
+type envelope struct {
+	Status       string          `json:"status"`
+	ErrorMessage string          `json:"errorMessage"`
+	Response     json.RawMessage `json:"response"`
 }
 
-func (c *Client) callGET(ctx context.Context, path string, in any) (*apiResp, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	qs, err := query.Values(in)
+// get calls a read endpoint and returns the "response" member of the envelope.
+func (c *Client) get(ctx context.Context, path string, params url.Values) (json.RawMessage, error) {
+	raw, err := c.getRaw(ctx, path, params)
 	if err != nil {
 		return nil, err
 	}
-
-	if c.Token != "" {
-		qs.Set("token", c.Token)
-	}
-
-	u := fmt.Sprintf("%s?%s", c.normalizePath(path), qs.Encode())
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.hc.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	return parse(resp)
+	return responseMember(path, raw)
 }
 
-func (c *Client) callPOST(ctx context.Context, path string, body any) (*apiResp, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	p := url.Values{}
-	if c.Token != "" {
-		p.Set("token", c.Token)
+func (c *Client) getRaw(ctx context.Context, path string, params url.Values) ([]byte, error) {
+	target := c.base + path
+	if len(params) > 0 {
+		target += "?" + params.Encode()
 	}
-	var b bytes.Buffer
-	if body != nil {
-		if err := json.NewEncoder(&b).Encode(body); err != nil {
-			return nil, err
-		}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s?%s", c.normalizePath(path), p.Encode()), &b)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	return parse(resp)
+	return c.send(req, path, c.token)
 }
 
-// callPOSTForm sends a form-encoded POST request. It marshals the struct via
-// its json tags (using jsonToFormValues) so that all request structs can use a
-// single set of json+yaml tags. Only the /api/settings/set endpoint supports a
-// raw JSON body (callPOST); every other mutating endpoint requires form encoding.
-func (c *Client) callPOSTForm(ctx context.Context, path string, in any) (*apiResp, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	vals, err := jsonToFormValues(in)
+// postForm calls a mutating endpoint with a form body, which keeps
+// credentials and record data out of URLs.
+func (c *Client) postForm(ctx context.Context, path string, form url.Values) (json.RawMessage, error) {
+	raw, err := c.postFormRaw(ctx, path, form)
 	if err != nil {
 		return nil, err
 	}
-	if c.Token != "" {
-		vals.Set("token", c.Token)
-	}
+	return responseMember(path, raw)
+}
 
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		c.normalizePath(path),
-		strings.NewReader(vals.Encode()),
-	)
+func (c *Client) postFormRaw(ctx context.Context, path string, form url.Values) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+	return c.send(req, path, c.token)
+}
 
-	resp, err := c.hc.Do(req)
+// postJSON calls an endpoint that parses a JSON body (only /api/settings/set).
+func (c *Client) postJSON(ctx context.Context, path string, body any) (json.RawMessage, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: encode body: %w", path, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
-	return parse(resp)
+	req.Header.Set("Content-Type", "application/json")
+	raw, err := c.send(req, path, c.token)
+	if err != nil {
+		return nil, err
+	}
+	return responseMember(path, raw)
+}
+
+// send executes req with token as a bearer credential and returns the raw
+// body once the envelope reports status "ok".
+func (c *Client) send(req *http.Request, path, token string) ([]byte, error) {
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		// *url.Error embeds the full request URL; report the path only.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err
+		}
+		return nil, fmt.Errorf("%s %s: %w", req.Method, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: read response: %w", req.Method, path, err)
+	}
+
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, &APIError{Endpoint: path, HTTPStatus: resp.StatusCode,
+			Message: "the server redirected to " + resp.Header.Get("Location") + "; use that address as the API URL"}
+	}
+
+	var env envelope
+	decodeErr := json.Unmarshal(raw, &env)
+	if resp.StatusCode != http.StatusOK {
+		apiErr := &APIError{Endpoint: path, HTTPStatus: resp.StatusCode, Status: env.Status, Message: env.ErrorMessage}
+		if decodeErr != nil || apiErr.Message == "" {
+			apiErr.Message = http.StatusText(resp.StatusCode)
+		}
+		return nil, apiErr
+	}
+	if decodeErr != nil {
+		return nil, fmt.Errorf("%s %s: decode response: %w", req.Method, path, decodeErr)
+	}
+	if env.Status != "ok" {
+		return nil, &APIError{Endpoint: path, HTTPStatus: resp.StatusCode, Status: env.Status, Message: env.ErrorMessage}
+	}
+	return raw, nil
+}
+
+func responseMember(path string, raw []byte) (json.RawMessage, error) {
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("%s: decode response: %w", path, err)
+	}
+	return env.Response, nil
+}
+
+func decodeResponse[T any](path string, raw []byte) (*T, error) {
+	var v T
+	if len(raw) == 0 {
+		return &v, nil
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, fmt.Errorf("%s: decode response: %w", path, err)
+	}
+	return &v, nil
 }
 
 // jsonToFormValues marshals a struct using its json tags, then converts the
@@ -174,205 +208,130 @@ func jsonToFormValues(v any) (url.Values, error) {
 		if string(raw) == "null" {
 			continue
 		}
-		// JSON string → unquoted value
 		var s string
 		if json.Unmarshal(raw, &s) == nil {
 			vals.Set(k, s)
 			continue
 		}
-		// String array → comma-separated (e.g. dnsServerLocalEndPoints)
 		var strs []string
 		if json.Unmarshal(raw, &strs) == nil {
 			vals.Set(k, strings.Join(strs, ","))
 			continue
 		}
-		// Numbers, bools, object arrays → literal JSON representation
 		vals.Set(k, string(raw))
 	}
 
 	return vals, nil
 }
 
-// unmarshalResp is a generic helper that unmarshals an apiResp.Response
-// into the target type, eliminating repeated decode boilerplate.
-func unmarshalResp[T any](r *apiResp) (*T, error) {
-	var v T
-	if err := json.Unmarshal(r.Response, &v); err != nil {
-		return nil, err
-	}
-	return &v, nil
+// Status reports whether the web service answers. It needs no authentication.
+func (c *Client) Status(ctx context.Context) error {
+	_, err := c.getRaw(ctx, "/api/status", nil)
+	return err
 }
 
-// callGETDirect performs a GET request and decodes the full response body into
-// dest. Unlike callGET, it does not expect the standard {status, response}
-// envelope (used by Login and CreateToken).
-func (c *Client) callGETDirect(ctx context.Context, path string, params any, dest any) (httpCode int, err error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+// WaitReady polls /api/status until the server answers or timeout elapses.
+func (c *Client) WaitReady(ctx context.Context, timeout, interval time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	qs, err := query.Values(params)
-	if err != nil {
-		return 0, err
+	for {
+		err := c.Status(ctx)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("server not ready after %s: %w", timeout, err)
+		case <-time.After(interval):
+		}
 	}
-	if c.Token != "" {
-		qs.Set("token", c.Token)
-	}
-
-	u := fmt.Sprintf("%s?%s", c.normalizePath(path), qs.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return 0, err
-	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode, json.NewDecoder(resp.Body).Decode(dest)
 }
 
-// validateDirectResp validates a response where status/error fields are at the
-// top level rather than nested in a "response" envelope.
-func validateDirectResp(httpCode int, decodeErr error, status, errMsg, message string) error {
-	if httpCode != 0 && httpCode != http.StatusOK {
-		msg := errMsg
-		if msg == "" {
-			msg = message
-		}
-		if decodeErr == nil && msg != "" {
-			return fmt.Errorf("HTTP %d: %s", httpCode, msg)
-		}
-		return fmt.Errorf("HTTP %d", httpCode)
+// CreateTokenResponse is the /api/user/createToken reply and the token file format.
+type CreateTokenResponse struct {
+	Username  string `json:"username,omitempty" yaml:"username,omitempty"`
+	TokenName string `json:"tokenName,omitempty" yaml:"tokenName,omitempty"`
+	Token     string `json:"token,omitempty" yaml:"token,omitempty"`
+}
+
+// CreateToken creates a non-expiring API token with the privileges of username.
+func (c *Client) CreateToken(ctx context.Context, username, password, tokenName string) (*CreateTokenResponse, error) {
+	const path = "/api/user/createToken"
+	raw, err := c.postFormRaw(ctx, path, url.Values{
+		"user":      {username},
+		"pass":      {password},
+		"tokenName": {tokenName},
+	})
+	if err != nil {
+		return nil, err
 	}
-	if decodeErr != nil {
-		return decodeErr
+	resp, err := decodeResponse[CreateTokenResponse](path, raw)
+	if err != nil {
+		return nil, err
 	}
-	if status != "" && status != "ok" {
-		msg := errMsg
-		if msg == "" {
-			msg = message
-		}
-		if msg == "" {
-			msg = status
-		}
-		return errors.New(msg)
+	if resp.Token == "" {
+		return nil, fmt.Errorf("%s: response contained no token", path)
 	}
+	return resp, nil
+}
+
+// Login creates a session for username and uses its token for later calls.
+// totp is the one-time password for a user with two-factor authentication,
+// or "".
+func (c *Client) Login(ctx context.Context, username, password, totp string) error {
+	const path = "/api/user/login"
+	form := url.Values{
+		"user":        {username},
+		"pass":        {password},
+		"includeInfo": {"false"},
+	}
+	if totp != "" {
+		form.Set("totp", totp)
+	}
+	raw, err := c.postFormRaw(ctx, path, form)
+	if err != nil {
+		return err
+	}
+	resp, err := decodeResponse[struct {
+		Token string `json:"token"`
+	}](path, raw)
+	if err != nil {
+		return err
+	}
+	if resp.Token == "" {
+		return fmt.Errorf("%s: response contained no token", path)
+	}
+	c.token = resp.Token
 	return nil
 }
 
-func extractErrMsg(r *apiResp) string {
-	msg := r.ErrorMessage
-	if msg == "" {
-		msg = r.Message
-	}
-	if msg == "" {
-		msg = r.Status
-	}
-	return msg
-}
-
-func parse(resp *http.Response) (*apiResp, error) {
-	defer resp.Body.Close()
-
-	var r apiResp
-	decodeErr := json.NewDecoder(resp.Body).Decode(&r)
-
-	if resp.StatusCode != http.StatusOK {
-		if decodeErr == nil && (r.ErrorMessage != "" || r.Message != "") {
-			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrMsg(&r))
-		}
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	if decodeErr != nil {
-		return nil, decodeErr
-	}
-
-	if r.Status != "ok" {
-		return nil, errors.New(extractErrMsg(&r))
-	}
-	return &r, nil
-}
-
-type apiResp struct {
-	Status       string          `json:"status"`
-	Message      string          `json:"message,omitempty"`
-	ErrorMessage string          `json:"errorMessage,omitempty"`
-	Response     json.RawMessage `json:"response,omitempty"`
-}
-
-type CreateTokenResponse struct {
-	Username     string `json:"username,omitempty" yaml:"username,omitempty"`
-	TokenName    string `json:"tokenName,omitempty" yaml:"tokenName,omitempty"`
-	Token        string `json:"token,omitempty" yaml:"token,omitempty"`
-	Status       string `json:"status,omitempty" yaml:"status,omitempty"`
-	ErrorMessage string `json:"errorMessage,omitempty" yaml:"-"`
-	Message      string `json:"message,omitempty" yaml:"-"`
-}
-
-// CreateToken creates a non-expiring API token for the specified user.
-// The token will have the same privileges as the user account.
-func (c *Client) CreateToken(ctx context.Context, username, password, tokenName string) (*CreateTokenResponse, error) {
-	params := struct {
-		User      string `url:"user"`
-		Pass      string `url:"pass"`
-		TokenName string `url:"tokenName"`
-	}{
-		User:      username,
-		Pass:      password,
-		TokenName: tokenName,
-	}
-
-	var resp CreateTokenResponse
-	code, decodeErr := c.callGETDirect(ctx, "/api/user/createToken", params, &resp)
-	if err := validateDirectResp(code, decodeErr, resp.Status, resp.ErrorMessage, resp.Message); err != nil {
-		return nil, fmt.Errorf("create token: %w", err)
-	}
-	return &resp, nil
-}
-
-type LoginResponse struct {
-	DisplayName  string          `json:"displayName,omitempty"`
-	Username     string          `json:"username,omitempty"`
-	Token        string          `json:"token,omitempty"`
-	Info         json.RawMessage `json:"info,omitempty"`
-	Status       string          `json:"status,omitempty"`
-	ErrorMessage string          `json:"errorMessage,omitempty"`
-	Message      string          `json:"message,omitempty"`
-}
-
-// Login authenticates with the server and returns a session token.
-// On successful login, the client's token is automatically updated.
-func (c *Client) Login(ctx context.Context, username, password string) (*LoginResponse, error) {
-	params := struct {
-		User        string `url:"user"`
-		Pass        string `url:"pass"`
-		IncludeInfo bool   `url:"includeInfo"`
-	}{
-		User:        username,
-		Pass:        password,
-		IncludeInfo: false,
-	}
-
-	var resp LoginResponse
-	code, decodeErr := c.callGETDirect(ctx, "/api/user/login", params, &resp)
-	if err := validateDirectResp(code, decodeErr, resp.Status, resp.ErrorMessage, resp.Message); err != nil {
-		return nil, fmt.Errorf("login: %w", err)
-	}
-	c.Token = resp.Token
-	return &resp, nil
-}
-
+// ChangePassword changes the password of the logged-in user.
 func (c *Client) ChangePassword(ctx context.Context, currentPassword, newPassword string) error {
-	params := struct {
-		Pass    string `url:"pass"`
-		NewPass string `url:"newPass"`
-	}{
-		Pass:    currentPassword,
-		NewPass: newPassword,
-	}
-
-	_, err := c.callGET(ctx, "/api/user/changePassword", params)
+	_, err := c.postForm(ctx, "/api/user/changePassword", url.Values{
+		"pass":    {currentPassword},
+		"newPass": {newPassword},
+	})
 	return err
+}
+
+// TokenUser returns the user that token belongs to. The error matches
+// ErrInvalidToken when the server does not recognise the token.
+func (c *Client) TokenUser(ctx context.Context, token string) (string, error) {
+	const path = "/api/user/session/get"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return "", err
+	}
+	raw, err := c.send(req, path, token)
+	if err != nil {
+		return "", err
+	}
+	resp, err := decodeResponse[struct {
+		Username string `json:"username"`
+	}](path, raw)
+	if err != nil {
+		return "", err
+	}
+	return resp.Username, nil
 }

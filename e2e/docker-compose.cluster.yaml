@@ -7,7 +7,7 @@ networks:
 
 services:
   dns-primary:
-    image: technitium/dns-server:15.5.1
+    image: technitium/dns-server:15.6.1
     ports:
       - "${DNS_PRIMARY_PORT}:5380/tcp"
     networks:
@@ -25,7 +25,7 @@ services:
       start_period: 10s
 
   dns-secondary:
-    image: technitium/dns-server:15.5.1
+    image: technitium/dns-server:15.6.1
     ports:
       - "${DNS_SECONDARY_PORT}:5380/tcp"
     networks:

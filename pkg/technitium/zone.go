@@ -3,6 +3,7 @@ package technitium
 import (
 	"context"
 	"fmt"
+	"net/url"
 )
 
 type (
@@ -43,20 +44,39 @@ type ZoneCreateRequest struct {
 	ProxyPassword              *string               `json:"proxyPassword,omitempty" yaml:"proxyPassword,omitempty"`
 }
 
-func (c *Client) CreateZone(ctx context.Context, z ZoneCreateRequest) (string, error) {
-	r, err := c.callPOSTForm(ctx, "/api/zones/create", z)
-	if err != nil {
-		return "", fmt.Errorf("create zone %q: %w", z.Zone, err)
-	}
+// CatalogMemberTypes are the zone types that can belong to a catalog zone.
+var CatalogMemberTypes = map[ZoneType]bool{
+	ZonePrimary:   true,
+	ZoneSecondary: true,
+	ZoneStub:      true,
+	ZoneForwarder: true,
+}
 
-	type domainResp struct {
-		Domain string `json:"domain"`
-	}
-	payload, err := unmarshalResp[domainResp](r)
+// ListZones returns every zone on the server.
+func (c *Client) ListZones(ctx context.Context) ([]ZoneSummary, error) {
+	const path = "/api/zones/list"
+	raw, err := c.get(ctx, path, nil)
 	if err != nil {
-		return "", fmt.Errorf("create zone %q: %w", z.Zone, err)
+		return nil, fmt.Errorf("list zones: %w", err)
 	}
-	return payload.Domain, nil
+	resp, err := decodeResponse[struct {
+		Zones []ZoneSummary `json:"zones"`
+	}](path, raw)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Zones, nil
+}
+
+func (c *Client) CreateZone(ctx context.Context, z ZoneCreateRequest) error {
+	form, err := jsonToFormValues(z)
+	if err != nil {
+		return fmt.Errorf("create zone %q: %w", z.Zone, err)
+	}
+	if _, err := c.postForm(ctx, "/api/zones/create", form); err != nil {
+		return fmt.Errorf("create zone %q: %w", z.Zone, err)
+	}
+	return nil
 }
 
 type ZoneAccessOption string
@@ -88,19 +108,19 @@ const (
 	UpdateAllowZoneNameServersAndSpecified       UpdateOption       = "AllowZoneNameServersAndUseSpecifiedNetworkACL"
 )
 
-// ACLSettings groups the repetitive ACL/Notify/Update knobs so it can be reused
-// in the "set request" *and* in the JSON "get response".
+// ACLSettings are a zone's access, notify and update options. A list left
+// out is not sent; an explicit empty list is sent and clears the option.
 type ACLSettings struct {
 	QueryAccess                     *ZoneAccessOption   `json:"queryAccess,omitempty" yaml:"queryAccess,omitempty"`
-	QueryAccessNetworkACL           []string            `json:"queryAccessNetworkACL,omitempty" yaml:"queryAccessNetworkACL,omitempty"`
+	QueryAccessNetworkACL           []string            `json:"queryAccessNetworkACL" yaml:"queryAccessNetworkACL,omitempty"`
 	ZoneTransfer                    *ZoneTransferOption `json:"zoneTransfer,omitempty" yaml:"zoneTransfer,omitempty"`
-	ZoneTransferNetworkACL          []string            `json:"zoneTransferNetworkACL,omitempty" yaml:"zoneTransferNetworkACL,omitempty"`
-	ZoneTransferTsigKeys            []string            `json:"zoneTransferTsigKeyNames,omitempty" yaml:"zoneTransferTsigKeyNames,omitempty"`
+	ZoneTransferNetworkACL          []string            `json:"zoneTransferNetworkACL" yaml:"zoneTransferNetworkACL,omitempty"`
+	ZoneTransferTsigKeys            []string            `json:"zoneTransferTsigKeyNames" yaml:"zoneTransferTsigKeyNames,omitempty"`
 	Notify                          *NotifyOption       `json:"notify,omitempty" yaml:"notify,omitempty"`
-	NotifyNameServers               []string            `json:"notifyNameServers,omitempty" yaml:"notifyNameServers,omitempty"`
-	NotifySecondaryCatalogNameSrvrs []string            `json:"notifySecondaryCatalogsNameServers,omitempty" yaml:"notifySecondaryCatalogsNameServers,omitempty"`
+	NotifyNameServers               []string            `json:"notifyNameServers" yaml:"notifyNameServers,omitempty"`
+	NotifySecondaryCatalogNameSrvrs []string            `json:"notifySecondaryCatalogsNameServers" yaml:"notifySecondaryCatalogsNameServers,omitempty"`
 	Update                          *UpdateOption       `json:"update,omitempty" yaml:"update,omitempty"`
-	UpdateNetworkACL                []string            `json:"updateNetworkACL,omitempty" yaml:"updateNetworkACL,omitempty"`
+	UpdateNetworkACL                []string            `json:"updateNetworkACL" yaml:"updateNetworkACL,omitempty"`
 	UpdateSecPolicies               *string             `json:"updateSecurityPolicies,omitempty" yaml:"updateSecurityPolicies,omitempty"`
 }
 
@@ -111,46 +131,67 @@ type ZoneOptionsUpdate struct {
 	OverrideCatalogQueryAccess *bool                 `json:"overrideCatalogQueryAccess,omitempty"`
 	OverrideCatalogZoneXfr     *bool                 `json:"overrideCatalogZoneTransfer,omitempty"`
 	OverrideCatalogNotify      *bool                 `json:"overrideCatalogNotify,omitempty"`
-	PrimaryNameServerAddresses []string              `json:"primaryNameServerAddresses,omitempty"`
+	PrimaryNameServerAddresses []string              `json:"primaryNameServerAddresses"`
 	PrimaryXfrProto            *ZoneTransferProtocol `json:"primaryZoneTransferProtocol,omitempty"`
 	PrimaryXfrTsigKey          *string               `json:"primaryZoneTransferTsigKeyName,omitempty"`
 	ValidateZone               *bool                 `json:"validateZone,omitempty"`
 	ACLSettings
 }
 
-type ZoneOptionsFetch struct {
-	Zone                         string `url:"zone"` // required
-	IncludeAvailableCatalogZones bool   `url:"includeAvailableCatalogZoneNames,omitempty"`
-	IncludeAvailableTsigKeyNames bool   `url:"includeAvailableTsigKeyNames,omitempty"`
+// UpdateSecurityPolicy is one entry of a zone's dynamic update policy as
+// returned by /api/zones/options/get.
+type UpdateSecurityPolicy struct {
+	TsigKeyName  string   `json:"tsigKeyName"`
+	Domain       string   `json:"domain"`
+	AllowedTypes []string `json:"allowedTypes"`
 }
 
+// ZoneOptions is the /api/zones/options/get response. Its policy list is a
+// structured array, unlike the pipe-separated form the setter takes.
 type ZoneOptions struct {
-	Name                      string   `json:"name"`
-	Type                      ZoneType `json:"type"`
-	Internal                  bool     `json:"internal"`
-	DnssecStatus              string   `json:"dnssecStatus"`
-	NotifyFailed              bool     `json:"notifyFailed"`
-	NotifyFailedFor           []string `json:"notifyFailedFor"`
-	Disabled                  bool     `json:"disabled"`
-	Catalog                   string   `json:"catalog,omitempty"`
-	ACLSettings               `json:",inline"`
-	AvailableCatalogZoneNames []string `json:"availableCatalogZoneNames,omitempty"`
-	AvailableTsigKeyNames     []string `json:"availableTsigKeyNames,omitempty"`
-	UpdateSecurityPolicies    string   `json:"updateSecurityPolicies,omitempty"`
+	Name                               string                 `json:"name"`
+	Type                               ZoneType               `json:"type"`
+	Internal                           bool                   `json:"internal"`
+	DnssecStatus                       string                 `json:"dnssecStatus"`
+	Disabled                           bool                   `json:"disabled"`
+	Catalog                            string                 `json:"catalog"`
+	IsSecondaryCatalogMember           bool                   `json:"isSecondaryCatalogMember"`
+	PrimaryNameServerAddresses         []string               `json:"primaryNameServerAddresses"`
+	PrimaryZoneTransferProtocol        string                 `json:"primaryZoneTransferProtocol"`
+	PrimaryZoneTransferTsigKeyName     string                 `json:"primaryZoneTransferTsigKeyName"`
+	ValidateZone                       bool                   `json:"validateZone"`
+	NotifySecondaryCatalogsNameServers []string               `json:"notifySecondaryCatalogsNameServers"`
+	OverrideCatalogQueryAccess         bool                   `json:"overrideCatalogQueryAccess"`
+	OverrideCatalogZoneTransfer        bool                   `json:"overrideCatalogZoneTransfer"`
+	OverrideCatalogNotify              bool                   `json:"overrideCatalogNotify"`
+	QueryAccess                        string                 `json:"queryAccess"`
+	QueryAccessNetworkACL              []string               `json:"queryAccessNetworkACL"`
+	ZoneTransfer                       string                 `json:"zoneTransfer"`
+	ZoneTransferNetworkACL             []string               `json:"zoneTransferNetworkACL"`
+	ZoneTransferTsigKeyNames           []string               `json:"zoneTransferTsigKeyNames"`
+	Notify                             string                 `json:"notify"`
+	NotifyNameServers                  []string               `json:"notifyNameServers"`
+	Update                             string                 `json:"update"`
+	UpdateNetworkACL                   []string               `json:"updateNetworkACL"`
+	UpdateSecurityPolicies             []UpdateSecurityPolicy `json:"updateSecurityPolicies"`
 }
 
-func (c *Client) GetZoneOptions(ctx context.Context, z ZoneOptionsFetch) (*ZoneOptions, error) {
-	r, err := c.callGET(ctx, "/api/zones/options/get", z)
+func (c *Client) GetZoneOptions(ctx context.Context, zone string) (*ZoneOptions, error) {
+	const path = "/api/zones/options/get"
+	raw, err := c.get(ctx, path, url.Values{"zone": {zone}})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get zone options %q: %w", zone, err)
 	}
-	return unmarshalResp[ZoneOptions](r)
+	return decodeResponse[ZoneOptions](path, raw)
 }
 
-func (c *Client) SetZoneOptions(ctx context.Context, z ZoneOptionsUpdate) (*ZoneOptions, error) {
-	r, err := c.callPOSTForm(ctx, "/api/zones/options/set", z)
+func (c *Client) SetZoneOptions(ctx context.Context, z ZoneOptionsUpdate) error {
+	form, err := jsonToFormValues(z)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("set zone options %q: %w", z.Zone, err)
 	}
-	return unmarshalResp[ZoneOptions](r)
+	if _, err := c.postForm(ctx, "/api/zones/options/set", form); err != nil {
+		return fmt.Errorf("set zone options %q: %w", z.Zone, err)
+	}
+	return nil
 }

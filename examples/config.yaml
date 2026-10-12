@@ -1,45 +1,74 @@
-# Cluster configuration (applied after DNS settings).
-# DNS settings are applied first so TSIG keys are set cleanly before
-# cluster init adds its own internal keys.
-# Primary node — include DNS settings, zones, and records below.
-# Secondary node — use cluster-only config (no dnsSettings/zones/records
-# needed; they replicate from the primary).
+# Example DNS configuration for `technitium-configurator configure`.
 #
-# Primary example:
+# What a run does with each section:
+#   dnsSettings     - applied on every run; only the keys listed here are sent
+#   zones           - created if missing; their options are applied on every run
+#   records         - missing values are added (see recordPolicy below)
+#   apps            - installed if missing; config is applied when it differs
+#   administration  - groups and users created if missing; grants merged
+#   cluster         - initialized or joined once; node IPs and primary timing
+#                     options on every run
+#
+# Unknown keys and invalid values are rejected, so a mistake fails the run
+# before anything changes. This file can also be split into several files
+# (or documents separated by ---) and passed together:
+#   technitium-configurator configure base.yaml zones/
+
+# merge (default): add declared values and leave any others in place.
+# replace: make the declared values the only ones for each declared name and
+# type. Can also be set per zone and per record.
+recordPolicy: "merge"
+
+# Cluster (optional). Applied after dnsSettings so the cluster's own TSIG key
+# is added on top of yours. On a cluster primary, zones join the cluster
+# catalog by default so they replicate to secondaries; set `catalog: ""` on a
+# zone to keep it local. Catalog members follow the catalog's query access,
+# zone transfer and notify settings unless the zone sets
+# overrideCatalogQueryAccess, overrideCatalogZoneTransfer or
+# overrideCatalogNotify. Leave zone transfer inherited on a cluster: the
+# catalog's transfer policy is what replicates the zone.
+#
+# Primary (cluster init renames the server into the cluster domain, so also
+# set dnsSettings.dnsServerDomain to a name inside it, for example
+# "dns.dns-cluster.example.com"):
 # cluster:
 #   mode: "primary"
 #   domain: "dns-cluster.example.com"
 #   nodeIPs: "10.0.0.1"
-#   # Cluster timing options (primary only):
 #   configRefreshIntervalSeconds: 60      # how often secondaries sync config (default 900)
 #   configRetryIntervalSeconds: 30        # retry interval on sync failure (default 60)
 #   heartbeatRefreshIntervalSeconds: 15   # heartbeat interval (default 30)
 #   heartbeatRetryIntervalSeconds: 10     # heartbeat retry interval (default 10)
 #
-# Secondary example (cluster-only, no DNS settings needed):
+# Secondary (separate file; settings, zones and apps come from the primary):
 # cluster:
 #   mode: "secondary"
 #   nodeIPs: "10.0.0.2"
-#   primaryURL: "https://primary-dns:5380"
+#   primaryURL: "https://primary-dns:53443"
 #   primaryIP: "10.0.0.1"
 #   primaryUsername: "admin"
 #   primaryPassword: "password"
-#   primaryTotp: ""                       # TOTP code for 2FA-enabled primaries
+#   primaryTotp: ""                       # one-time code for a 2FA primary user; works
+#                                         # for the join only, so later runs need a
+#                                         # primary user without two-factor authentication
 #   ignoreCertErrors: false
 
 dnsSettings:
-  dnsServerDomain: "dnsserver.com"
+  dnsServerDomain: "dns.example.com"
   dnsServerLocalEndPoints:
     - "0.0.0.0:53"
+    - "[::]:53"
   defaultRecordTtl: 3600
   defaultNsRecordTtl: 3600
   defaultSoaRecordTtl: 900
   dnssecValidation: true
-  preferIPv6: false
+  ipv6Mode: "Disabled"
   udpPayloadSize: 1232
+  recursion: "AllowOnlyForPrivateNetworks"
   resolverRetries: 2
   resolverTimeout: 2000
   resolverConcurrency: 4
+  forwarders: []                          # explicit empty list clears forwarders
   forwarderRetries: 2
   forwarderTimeout: 2000
   forwarderConcurrency: 10
@@ -47,97 +76,141 @@ dnsSettings:
   serveStale: true
   serveStaleTtl: 86400
   cacheNegativeRecordTtl: 60
-  cacheMaximumEntries: 0
+  cacheMaximumEntries: 0                  # 0 means unlimited
+  enableCachePrefetch: true
+  enableBlocking: false                   # built-in blocking off; Advanced Blocking below does it
   enableDnsOverHttp: true
   enableDnsOverHttps: true
   enableDnsOverTls: true
-  enableDnsOverQuic: true
+  # enableDnsOverQuic: true              # needs libmsquic on the server; the official
+  #                                       # Docker image has it, other installs may not
   loggingType: "FileAndConsole"
-  enableLogging: true
   logQueries: false
   useLocalTime: true
   maxLogFileDays: 7
   maxStatFileDays: 365
+  tsigKeys:
+    - keyName: "external-dns"
+      algorithmName: "hmac-sha256"
+      sharedSecret: "c2VjcmV0LWZvci1leHRlcm5hbC1kbnMtZXhhbXBsZQ=="
 
 zones:
-  - zone: "example2.com"
+  - zone: "example.com"
     type: "Primary"
     useSoaSerialDateScheme: true
-    primaryNameServerAddresses:
-      - "ns1.example2.com"
-      - "ns2.example.com"
     aclSettings:
       queryAccess: "Allow"
       zoneTransfer: "AllowOnlyZoneNameServers"
       notify: "ZoneNameServers"
-      update: "AllowOnlyZoneNameServers"
+      update: "UseSpecifiedNetworkACL"
+      updateNetworkACL:
+        - "10.0.0.0/8"
+      # tsigKeyName|domain|allowed types; repeat the triple for more policies
+      updateSecurityPolicies: "external-dns|*.example.com|ANY"
 
-  - zone: "sub.example.com"
-    type: "Secondary"
-    primaryNameServerAddresses:
-      - "ns1.example.com"
-    zoneTransferProtocol: "Tls"
-    tsigKeyName: "example.com-key"
-    validateZone: true
+  - zone: "corp.internal"
+    type: "Forwarder"
+    initializeForwarder: true
+    protocol: "Udp"
+    forwarder: "10.0.0.53"
+    dnssecValidation: false
+
+  # A Secondary zone transfers from its primaries when created, so they must
+  # be reachable from the DNS server:
+  # - zone: "partner.example.net"
+  #   type: "Secondary"
+  #   primaryNameServerAddresses: ["192.0.2.10"]
+  #   zoneTransferProtocol: "Tcp"
+  #   tsigKeyName: "external-dns"
 
 records:
-  - domain: "www.example2.com"
+  - domain: "www.example.com"
     type: "A"
-    ttl: 3600
-    ipAddress: "192.168.1.1"
+    ttl: 300
+    ipAddress: "192.168.1.10"
+    comments: "web server"
     ptr: true
+    createPtrZone: true                   # ptr needs a reverse zone; create it if missing
 
-  - domain: "mail.example2.com"
+  - domain: "mail.example.com"
     type: "MX"
     ttl: 3600
-    exchange: "mail.example2.com"
+    exchange: "mail.example.com"
     preference: 10
 
-  - domain: "example2.com"
+  - domain: "example.com"
     type: "TXT"
     ttl: 3600
-    text: "v=spf1 ip4:192.168.1.1 -all"
+    text: "v=spf1 ip4:192.168.1.10 -all"
 
+  - name: "docs.example.com"              # "name" is an alias for "domain"
+    type: "CNAME"
+    ttl: 3600
+    cname: "www.example.com"
+
+  # This name is owned by the file: any other A value is removed.
+  - domain: "pool.example.com"
+    type: "A"
+    recordPolicy: "replace"
+    ttl: 60
+    ipAddress: "192.168.1.21"
+  - domain: "pool.example.com"
+    type: "A"
+    recordPolicy: "replace"
+    ttl: 60
+    ipAddress: "192.168.1.22"
+
+# Groups and users are created if missing. A password is needed only to
+# create a user and is never changed afterwards.
+# administration:
+#   groups:
+#     - name: "dns-readers"
+#       description: "Read-only DNS access"
+#   users:
+#     - username: "monitoring"
+#       passwordEnv: "MONITORING_PASSWORD"
+#       groups: ["dns-readers"]
+#   permissions:
+#     - section: "Zones"
+#       groups:
+#         dns-readers: [view]
+
+# App config is passed to the app as JSON unchanged, so any field the app's
+# dnsApp.config accepts can be used. Leave config out to keep the app's own.
 apps:
   - name: "Advanced Blocking"
-    url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v8.zip"
+    url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v11.2.1.zip"
     config:
       enableBlocking: true
+      blockingAnswerTtl: 30
       blockListUrlUpdateIntervalHours: 24
       networkGroupMap:
-        "0.0.0.0/0":      "home"
-        "::/0":           "home"
+        "0.0.0.0/0": "home"
+        "::/0": "home"
       groups:
-        - name: home
+        - name: "home"
           enableBlocking: true
           allowTxtBlockingReport: true
-          blockAsNxDomain: false
-          blockingAddresses: [ "0.0.0.0", "::" ]
-          # allowed:
-          #   - example.com
-          #   - "*.my-smart-home.local"
-          # blocked:
-          #   - annoyingads.com
+          blockAsNxDomain: true
+          blockingAddresses: ["0.0.0.0", "::"]
+          allowed: []
+          blocked: []
+          allowListUrls: []
           blockListUrls:
-            - "https://raw.githubusercontent.com/xRuffKez/NRD/refs/heads/main/lists/14-day/wildcard/nrd-14day_wildcard.txt"
             - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt"
-            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt"
             - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-onlydomains.txt"
-            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nosafesearch-onlydomains.txt"
-            - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/dyndns-onlydomains.txt"
+          allowedRegex: []
+          blockedRegex: []
+          regexAllowListUrls: []
+          regexBlockListUrls: []
+          adblockListUrls: []
 
   - name: "Advanced Forwarding"
-    url: "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v3.1.zip"
+    url: "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v5.2.zip"
     config:
       appPreference: 200
       enableForwarding: true
-      proxyServers:
-        - name: "local-proxy"
-          type: "socks5"
-          proxyAddress: "localhost"
-          proxyPort: 1080
-          proxyUsername: null
-          proxyPassword: null
+      proxyServers: []
       forwarders:
         - name: "quad9-doh"
           proxy: null
@@ -145,35 +218,25 @@ apps:
           forwarderProtocol: "Https"
           forwarderAddresses:
             - "https://dns.quad9.net/dns-query (9.9.9.9)"
-        - name: "cloudflare-google"
+        - name: "cloudflare-tls"
           proxy: null
           dnssecValidation: true
           forwarderProtocol: "Tls"
           forwarderAddresses:
             - "1.1.1.1"
-            - "8.8.8.8"
-        - name: "quad9-tls-proxied"
-          proxy: "local-proxy"
-          dnssecValidation: true
-          forwarderProtocol: "Tls"
-          forwarderAddresses:
-            - "9.9.9.9"
+            - "1.0.0.1"
       networkGroupMap:
         "0.0.0.0/0": "everyone"
-        "[::]/0": "everyone"
+        "::/0": "everyone"
       groups:
         - name: "everyone"
           enableForwarding: true
           forwardings:
-            - forwarders:
-                - "quad9-doh"
-              domains:
-                - "example.com"
-            - forwarders:
-                - "cloudflare-google"
-              domains:
-                - "*"
-          adguardUpstreams:
-            - proxy: null
-              dnssecValidation: true
-              configFile: "adguard-upstreams.txt"
+            - forwarders: ["quad9-doh"]
+              domains: ["example.org"]
+            - forwarders: ["cloudflare-tls"]
+              domains: ["*"]
+
+  # Apps used only through APP records need no config:
+  - name: "NO DATA"
+    url: "https://download.technitium.com/dns/apps/NoDataApp-v6.zip"

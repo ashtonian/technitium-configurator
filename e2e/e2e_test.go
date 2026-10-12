@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +39,7 @@ func TestE2EIdempotency(t *testing.T) {
 	apiURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	startDNSServer(t, port)
-	waitForHealth(t, apiURL+"/api/health", 60*time.Second)
+	waitForHealth(t, apiURL+"/api/status", 60*time.Second)
 
 	testDir, err := os.Getwd()
 	if err != nil {
@@ -99,14 +101,18 @@ func TestE2EIdempotency(t *testing.T) {
 	// ── RUN 2 (idempotency) ────────────────────────────────
 	t.Log("=== RUN 2: Idempotency check ===")
 
-	// change-password (same → same, should succeed)
-	runConfigurator(t, bin, "change-password", envMap{
+	// change-password with the same inputs as run 1: the password is already
+	// changed, so this must succeed without changing anything.
+	out := runConfigurator(t, bin, "change-password", envMap{
 		"DNS_API_URL":      apiURL,
 		"DNS_USERNAME":     defaultUser,
-		"DNS_PASSWORD":     newPassword,
+		"DNS_PASSWORD":     defaultPassword,
 		"DNS_NEW_PASSWORD": newPassword,
 		"DNS_LOG_LEVEL":    "info",
 	})
+	if !strings.Contains(out, "already set to the new value") {
+		t.Errorf("change-password rerun did not detect the completed change:\n%s", out)
+	}
 
 	// create-token (detects existing token file, skips)
 	runConfigurator(t, bin, "create-token", envMap{
@@ -126,13 +132,15 @@ func TestE2EIdempotency(t *testing.T) {
 		t.Error("token file changed between run 1 and run 2 — expected idempotent skip")
 	}
 
-	// configure again (zone-exists errors logged, but settings + records still apply)
-	runConfigurator(t, bin, "configure", envMap{
+	// configure again: everything already exists, so nothing may be
+	// reported as a failure or conflict.
+	out = runConfigurator(t, bin, "configure", envMap{
 		"DNS_API_URL":   apiURL,
 		"DNS_USERNAME":  defaultUser,
 		"DNS_PASSWORD":  newPassword,
-		"DNS_LOG_LEVEL": "info",
+		"DNS_LOG_LEVEL": "debug",
 	}, dnsConfigPath)
+	assertCleanRerun(t, out)
 
 	// Verify same state as after run 1
 	t.Log("Verifying state after run 2...")
@@ -145,6 +153,46 @@ func TestE2EIdempotency(t *testing.T) {
 	verifyDNSSetting(t, apiURL, token2, zoneName)
 	verifyDNSSettingsFull(t, apiURL, token2)
 	verifyZoneACLSingleServer(t, apiURL, token2, zoneName)
+	verifyRecordTTL(t, apiURL, token2, "www."+zoneName, "A", zoneName, 120)
+
+	failEnv := envMap{
+		"DNS_API_URL":   apiURL,
+		"DNS_USERNAME":  defaultUser,
+		"DNS_PASSWORD":  newPassword,
+		"DNS_LOG_LEVEL": "info",
+	}
+
+	// A record the run can rule out before any change stops it with nothing
+	// applied, not even the valid record beside it.
+	preflightPath := filepath.Join(t.TempDir(), "preflight.yaml")
+	preflight := fmt.Sprintf("records:\n  - {domain: %q, type: A, ipAddress: 192.0.2.61}\n  - {domain: %q, type: FWD, forwarder: 192.0.2.53}\n",
+		"untouched."+zoneName, "fwd."+zoneName)
+	if err := os.WriteFile(preflightPath, []byte(preflight), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = runConfiguratorExpectFailure(t, bin, "configure", failEnv, preflightPath)
+	if !strings.Contains(out, "nothing was changed") || !strings.Contains(out, "FWD records belong in Forwarder zones") {
+		t.Errorf("configure did not stop before the FWD record:\n%s", out)
+	}
+	if recordPresent(apiURL, token2, "untouched."+zoneName, "A", zoneName) {
+		t.Error("a record was added although the run stopped before any change")
+	}
+
+	// A failure only the server can find fails the run, and the rest still
+	// applies.
+	badCfgPath := filepath.Join(t.TempDir(), "bad-config.yaml")
+	badCfg := fmt.Sprintf("records:\n  - {domain: %q, type: A, ipAddress: 192.0.2.60}\n  - {domain: %q, type: A, ipAddress: 198.51.100.7, ptr: true}\n",
+		"applied."+zoneName, "noptr."+zoneName)
+	if err := os.WriteFile(badCfgPath, []byte(badCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = runConfiguratorExpectFailure(t, bin, "configure", failEnv, badCfgPath)
+	if !strings.Contains(out, "1 operation(s) failed") || !strings.Contains(out, "noptr."+zoneName) {
+		t.Errorf("configure did not report the failed record:\n%s", out)
+	}
+	if !recordPresent(apiURL, token2, "applied."+zoneName, "A", zoneName) {
+		t.Error("the valid record was not applied alongside the failure")
+	}
 }
 
 func TestE2ECluster(t *testing.T) {
@@ -169,19 +217,19 @@ func TestE2ECluster(t *testing.T) {
 	)
 
 	startCluster(t, primaryPort, secondaryPort)
-	waitForHealth(t, primaryAPIURL+"/api/health", 60*time.Second)
-	waitForHealth(t, secondaryAPIURL+"/api/health", 60*time.Second)
+	waitForHealth(t, primaryAPIURL+"/api/status", 60*time.Second)
+	waitForHealth(t, secondaryAPIURL+"/api/status", 60*time.Second)
 
-	// Change passwords on both nodes
-	for _, nodeURL := range []string{primaryAPIURL, secondaryAPIURL} {
-		runConfigurator(t, bin, "change-password", envMap{
-			"DNS_API_URL":      nodeURL,
-			"DNS_USERNAME":     defaultUser,
-			"DNS_PASSWORD":     defaultPassword,
-			"DNS_NEW_PASSWORD": newPassword,
-			"DNS_LOG_LEVEL":    "info",
-		})
-	}
+	// Only the primary's password changes. The secondary keeps its default
+	// credentials and loses them when joining, since joining replaces its
+	// users with the primary's.
+	runConfigurator(t, bin, "change-password", envMap{
+		"DNS_API_URL":      primaryAPIURL,
+		"DNS_USERNAME":     defaultUser,
+		"DNS_PASSWORD":     defaultPassword,
+		"DNS_NEW_PASSWORD": newPassword,
+		"DNS_LOG_LEVEL":    "info",
+	})
 
 	// Primary config: cluster init + DNS settings + zone + records.
 	// Only the primary needs DNS config — settings, zones, and records
@@ -198,11 +246,14 @@ func TestE2ECluster(t *testing.T) {
   heartbeatRetryIntervalSeconds: 10
 
 dnsSettings:
+  # Cluster init renames the server into the cluster domain; a name already
+  # inside it keeps re-runs valid.
+  dnsServerDomain: "primary.e2e-cluster.local"
   defaultRecordTtl: 300
   defaultNsRecordTtl: 3600
   defaultSoaRecordTtl: 900
   dnssecValidation: false
-  preferIPv6: false
+  ipv6Mode: "Disabled"
   udpPayloadSize: 1232
   resolverRetries: 2
   resolverTimeout: 2000
@@ -219,11 +270,10 @@ dnsSettings:
   enableDnsOverHttps: true
   enableDnsOverQuic: true
   loggingType: "FileAndConsole"
-  enableLogging: true
   logQueries: false
   useLocalTime: true
   maxLogFileDays: 7
-  maxStatFileDays: 365
+  maxStatFileDays: 0
   recursion: "Allow"
   qpmPrefixLimitsIPv4:
     - prefix: 24
@@ -255,8 +305,13 @@ dnsSettings:
       sharedSecret: "YW5vdGhlcnByZXRlbmRzZWNyZXRrZXlmb3JkaGNwdGVzdA=="
 
 zones:
+  # The zone joins the cluster catalog, so it follows the catalog's ACLs
+  # unless overridden. Query access is overridden; zone transfer is left to
+  # the cluster, whose policy is what replicates the zone to secondaries.
   - zone: %q
     type: "Primary"
+    overrideCatalogQueryAccess: true
+    overrideCatalogZoneTransfer: false
     aclSettings:
       queryAccess: "AllowOnlyPrivateNetworks"
       zoneTransfer: "UseSpecifiedNetworkACL"
@@ -276,6 +331,10 @@ zones:
     protocol: "Https"
     forwarder: "https://cloudflare-dns.com/dns-query"
     dnssecValidation: true
+  # Kept out of the cluster catalog, so it stays on the primary only.
+  - zone: "local-only.test"
+    type: "Primary"
+    catalog: ""
 
 records:
   - domain: "www.%s"
@@ -290,7 +349,7 @@ records:
 
 apps:
   - name: "Advanced Blocking"
-    url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v8.zip"
+    url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v11.2.1.zip"
     config:
       enableBlocking: true
       blockListUrlUpdateIntervalHours: 24
@@ -318,7 +377,7 @@ apps:
           adblockListUrls: []
 
   - name: "Advanced Forwarding"
-    url: "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v3.1.zip"
+    url: "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v5.2.zip"
     config:
       enableForwarding: true
       forwarders:
@@ -364,6 +423,7 @@ apps:
 	verifyRecordExists(t, primaryAPIURL, token, clusterZone, "TXT", clusterZone)
 	verifyDNSSettingsFull(t, primaryAPIURL, token)
 	verifyZoneACL(t, primaryAPIURL, token, clusterZone)
+	verifyZoneCatalog(t, primaryAPIURL, token, clusterZone, "cluster-catalog."+clusterDomain, true, false)
 	verifyForwarderZone(t, primaryAPIURL, token, forwarderZone)
 	verifyAppInstalled(t, primaryAPIURL, token, "Advanced Blocking")
 	verifyAppInstalled(t, primaryAPIURL, token, "Advanced Forwarding")
@@ -413,66 +473,72 @@ apps:
 
 	// ── RUN 2: Join secondary to cluster (cluster-only config) ──
 	t.Log("=== RUN 2: Join secondary to cluster (cluster-only config) ===")
-	runConfigurator(t, bin, "configure", envMap{
+	secondaryEnv := envMap{
 		"DNS_API_URL":   secondaryAPIURL,
 		"DNS_USERNAME":  defaultUser,
-		"DNS_PASSWORD":  newPassword,
+		"DNS_PASSWORD":  defaultPassword,
 		"DNS_LOG_LEVEL": "debug",
-	}, secondaryCfgPath)
+	}
+	runConfigurator(t, bin, "configure", secondaryEnv, secondaryCfgPath)
 
 	// Verify secondary cluster state
 	secondaryToken := loginAndGetToken(t, secondaryAPIURL, defaultUser, newPassword)
 	verifyClusterState(t, secondaryAPIURL, secondaryToken, true, -1)
 
-	// Wait for config replication from primary to secondary.
-	// We set configRefreshIntervalSeconds=30 so this should happen within ~60s.
-	t.Log("Waiting for config replication to secondary...")
+	// Wait for replication. The secondary first creates the zone from the
+	// cluster catalog, then transfers its records, so poll for a record.
+	// configRefreshIntervalSeconds=30 bounds how long this can take.
+	t.Log("Waiting for zone replication to secondary...")
 	deadline := time.Now().Add(90 * time.Second)
 	replicated := false
 	for time.Now().Before(deadline) {
-		time.Sleep(10 * time.Second)
+		time.Sleep(5 * time.Second)
 		secondaryToken = loginAndGetToken(t, secondaryAPIURL, defaultUser, newPassword)
-		resp, err := http.Get(fmt.Sprintf("%s/api/zones/options/get?zone=%s&token=%s",
-			secondaryAPIURL, clusterZone, secondaryToken))
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				// Check if the API returned status:ok (zone exists)
-				resp2, _ := http.Get(fmt.Sprintf("%s/api/zones/options/get?zone=%s&token=%s",
-					secondaryAPIURL, clusterZone, secondaryToken))
-				body, _ := io.ReadAll(resp2.Body)
-				resp2.Body.Close()
-				if strings.Contains(string(body), `"status":"ok"`) {
-					replicated = true
-					break
-				}
-			}
+		if recordPresent(secondaryAPIURL, secondaryToken, "www."+clusterZone, "A", clusterZone) {
+			replicated = true
+			break
 		}
-		t.Log("Zone not yet replicated, retrying...")
+		t.Log("Zone records not yet replicated, retrying...")
 	}
-	if replicated {
-		verifyZoneExists(t, secondaryAPIURL, secondaryToken, clusterZone)
-		verifyRecordExists(t, secondaryAPIURL, secondaryToken, "www."+clusterZone, "A", clusterZone)
-	} else {
-		t.Log("Zone replication did not complete within timeout — skipping secondary zone verification")
+	if !replicated {
+		t.Fatalf("zone %s did not replicate to the secondary within the timeout", clusterZone)
 	}
+	verifyZoneExists(t, secondaryAPIURL, secondaryToken, clusterZone)
+	verifyRecordExists(t, secondaryAPIURL, secondaryToken, "www."+clusterZone, "A", clusterZone)
 
 	// ── RUN 3: Idempotency — re-run both ─────────────────
 	t.Log("=== RUN 3: Idempotency check ===")
 
-	runConfigurator(t, bin, "configure", envMap{
+	out := runConfigurator(t, bin, "configure", envMap{
 		"DNS_API_URL":   primaryAPIURL,
 		"DNS_USERNAME":  defaultUser,
 		"DNS_PASSWORD":  newPassword,
-		"DNS_LOG_LEVEL": "info",
+		"DNS_LOG_LEVEL": "debug",
 	}, primaryCfgPath)
+	assertCleanRerun(t, out)
 
-	runConfigurator(t, bin, "configure", envMap{
-		"DNS_API_URL":   secondaryAPIURL,
-		"DNS_USERNAME":  defaultUser,
-		"DNS_PASSWORD":  newPassword,
+	// Same inputs as the join: the node's own password no longer exists, so
+	// configure falls back to the primary's credentials.
+	out = runConfigurator(t, bin, "configure", secondaryEnv, secondaryCfgPath)
+	assertCleanRerun(t, out)
+	if !strings.Contains(out, "Logged in with the primary's credentials") {
+		t.Errorf("secondary re-run did not use the primary's credentials:\n%s", out)
+	}
+
+	// A token that cannot read cluster state must not create unreplicated zones.
+	limitedToken := createLimitedToken(t, primaryAPIURL, loginAndGetToken(t, primaryAPIURL, defaultUser, newPassword))
+	limitedCfg := filepath.Join(t.TempDir(), "limited.yaml")
+	if err := os.WriteFile(limitedCfg, []byte("zones:\n  - {zone: limited.test, type: Primary}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = runConfiguratorExpectFailure(t, bin, "configure", envMap{
+		"DNS_API_URL":   primaryAPIURL,
+		"DNS_API_TOKEN": limitedToken,
 		"DNS_LOG_LEVEL": "info",
-	}, secondaryCfgPath)
+	}, limitedCfg)
+	if !strings.Contains(out, "read cluster state to choose zone catalogs") {
+		t.Errorf("unexpected output for a token without cluster access:\n%s", out)
+	}
 
 	// Verify cluster state from both nodes — each should see 2 nodes
 	token3 := loginAndGetToken(t, primaryAPIURL, defaultUser, newPassword)
@@ -517,6 +583,34 @@ apps:
 	if !strings.Contains(output, "initialized=true") {
 		t.Errorf("cluster-state output missing initialized=true:\n%s", output)
 	}
+
+	// Export the primary and apply it back: nothing changes, and the zone
+	// kept out of the cluster catalog stays out.
+	primaryDebug := envMap{
+		"DNS_API_URL":   primaryAPIURL,
+		"DNS_USERNAME":  defaultUser,
+		"DNS_PASSWORD":  newPassword,
+		"DNS_LOG_LEVEL": "debug",
+	}
+	exportPath := filepath.Join(t.TempDir(), "primary-export.yaml")
+	runConfigurator(t, bin, "export", primaryDebug, exportPath)
+	if !strings.Contains(readFile(t, exportPath), "zone: local-only.test") {
+		t.Fatalf("export has no local-only.test:\n%s", readFile(t, exportPath))
+	}
+	assertCleanRerun(t, runConfigurator(t, bin, "configure", primaryDebug, exportPath))
+	verifyZoneCatalog(t, primaryAPIURL, loginAndGetToken(t, primaryAPIURL, defaultUser, newPassword), "local-only.test", "", false, false)
+
+	// A joined secondary drops its own API tokens. A token that no longer
+	// works there falls back to the primary's credentials.
+	out = runConfigurator(t, bin, "configure", envMap{
+		"DNS_API_URL":   secondaryAPIURL,
+		"DNS_API_TOKEN": strings.Repeat("0", 64),
+		"DNS_LOG_LEVEL": "debug",
+	}, secondaryCfgPath)
+	assertCleanRerun(t, out)
+	if !strings.Contains(out, "Logged in with the primary's credentials") {
+		t.Errorf("a stale token on the secondary did not fall back to the primary's credentials:\n%s", out)
+	}
 }
 
 // ─── Types ──────────────────────────────────────────────
@@ -525,14 +619,18 @@ type envMap map[string]string
 
 // ─── Helpers ────────────────────────────────────────────
 
+// requireDocker fails rather than skips: the e2e build tag asks for these
+// tests, and a skip would let CI pass without running them.
 func requireDocker(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not found in PATH, skipping e2e test")
+		t.Fatal("docker not found in PATH")
 	}
-	out, err := exec.Command("docker", "info").CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "info").CombinedOutput()
 	if err != nil {
-		t.Skipf("docker daemon not available: %v\n%s", err, out)
+		t.Fatalf("docker daemon not available: %v\n%s", err, out)
 	}
 }
 
@@ -543,7 +641,9 @@ func freePort(t *testing.T) int {
 		t.Fatalf("freePort: %v", err)
 	}
 	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	if err := l.Close(); err != nil {
+		t.Fatalf("freePort: %v", err)
+	}
 	return port
 }
 
@@ -651,8 +751,10 @@ func waitForHealth(t *testing.T, url string, timeout time.Duration) {
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(url)
 		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			// The API answers HTTP 200 for errors too; only the envelope says ok.
+			if resp.StatusCode == http.StatusOK && strings.Contains(string(body), `"status":"ok"`) {
 				t.Log("DNS server healthy")
 				return
 			}
@@ -686,6 +788,80 @@ func runConfigurator(t *testing.T, bin, command string, env envMap, extraArgs ..
 	return output
 }
 
+// createLimitedToken creates a user in DNS Administrators, which may manage
+// zones but has no Administration access, and returns an API token for it.
+func createLimitedToken(t *testing.T, apiURL, adminToken string) string {
+	t.Helper()
+	apiCall(t, apiURL, adminToken, "/api/admin/users/create", url.Values{"user": {"zonesonly"}, "pass": {"zones-only-password"}})
+	apiCall(t, apiURL, adminToken, "/api/admin/users/set", url.Values{"user": {"zonesonly"}, "memberOfGroups": {"DNS Administrators"}})
+	resp, err := http.PostForm(apiURL+"/api/user/createToken", url.Values{"user": {"zonesonly"}, "pass": {"zones-only-password"}, "tokenName": {"e2e"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out struct {
+		Status string `json:"status"`
+		Token  string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || out.Token == "" {
+		t.Fatalf("create token for zonesonly: status=%s err=%v", out.Status, err)
+	}
+	return out.Token
+}
+
+// runConfiguratorExpectFailure runs a command that must exit non-zero.
+func runConfiguratorExpectFailure(t *testing.T, bin, command string, env envMap, extraArgs ...string) string {
+	t.Helper()
+	cmd := exec.Command(bin, append([]string{command}, extraArgs...)...)
+	cmd.Env = []string{
+		"HOME=" + os.Getenv("HOME"),
+		"PATH=" + os.Getenv("PATH"),
+	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	out, err := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("[%s] exit=%d (failure expected)\n%s", command, cmd.ProcessState.ExitCode(), output)
+	if err == nil {
+		t.Fatalf("command %q succeeded, want a non-zero exit:\n%s", command, output)
+	}
+	return output
+}
+
+var requestLog = regexp.MustCompile(`msg="http request" method=(\w+) path=(\S+)`)
+
+// rerunWrites are the writes every run sends by design: login, settings,
+// zone options and cluster options.
+var rerunWrites = map[string]bool{
+	"/api/user/login":                       true,
+	"/api/settings/set":                     true,
+	"/api/zones/options/set":                true,
+	"/api/admin/cluster/primary/setOptions": true,
+}
+
+// assertCleanRerun fails when a re-run over unchanged state logs a failure
+// or a conflict, or writes anything beyond rerunWrites: no record, zone,
+// app, user, group or permission may be sent again. It reads the request
+// log, so the run must use DNS_LOG_LEVEL=debug.
+func assertCleanRerun(t *testing.T, output string) {
+	t.Helper()
+	for _, level := range []string{"level=ERROR", "level=WARN"} {
+		if strings.Contains(output, level) {
+			t.Errorf("re-run logged %s:\n%s", level, output)
+		}
+	}
+	requests := requestLog.FindAllStringSubmatch(output, -1)
+	if len(requests) == 0 {
+		t.Fatalf("re-run output has no request log; run it with DNS_LOG_LEVEL=debug:\n%s", output)
+	}
+	for _, m := range requests {
+		if m[1] != http.MethodGet && !rerunWrites[m[2]] {
+			t.Errorf("re-run sent %s %s", m[1], m[2])
+		}
+	}
+}
+
 // ─── API verification helpers ───────────────────────────
 
 func loginAndGetToken(t *testing.T, apiURL, user, pass string) string {
@@ -696,7 +872,7 @@ func loginAndGetToken(t *testing.T, apiURL, user, pass string) string {
 	if err != nil {
 		t.Fatalf("login request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	var result struct {
@@ -728,7 +904,7 @@ func queryDNSAPI(t *testing.T, apiURL, token, path string) json.RawMessage {
 	if err != nil {
 		t.Fatalf("API query %s failed: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	var result struct {
@@ -768,6 +944,73 @@ func verifyRecordExists(t *testing.T, apiURL, token, domain, recordType, zone st
 	for _, r := range result.Records {
 		if strings.EqualFold(r.Type, recordType) {
 			t.Logf("verified record %s/%s exists in zone %s", domain, recordType, zone)
+			return
+		}
+	}
+	t.Errorf("record %s/%s not found in zone %s", domain, recordType, zone)
+}
+
+// recordPresent reports whether a record of recordType exists at domain,
+// without failing the test, for use in polling loops.
+func recordPresent(apiURL, token, domain, recordType, zone string) bool {
+	params := url.Values{"domain": {domain}, "zone": {zone}, "token": {token}}
+	resp, err := http.Get(apiURL + "/api/zones/records/get?" + params.Encode())
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var result struct {
+		Status   string `json:"status"`
+		Response struct {
+			Records []struct {
+				Type string `json:"type"`
+			} `json:"records"`
+		} `json:"response"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil || result.Status != "ok" {
+		return false
+	}
+	for _, r := range result.Response.Records {
+		if strings.EqualFold(r.Type, recordType) {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyZoneCatalog(t *testing.T, apiURL, token, zone, wantCatalog string, wantQueryOverride, wantTransferOverride bool) {
+	t.Helper()
+	data := queryDNSAPI(t, apiURL, token, fmt.Sprintf("/api/zones/options/get?zone=%s", zone))
+	var opts struct {
+		Catalog                     string `json:"catalog"`
+		OverrideCatalogQueryAccess  bool   `json:"overrideCatalogQueryAccess"`
+		OverrideCatalogZoneTransfer bool   `json:"overrideCatalogZoneTransfer"`
+	}
+	if err := json.Unmarshal(data, &opts); err != nil {
+		t.Fatalf("failed to parse zone options for %s: %v", zone, err)
+	}
+	assertEq(t, zone+" catalog", opts.Catalog, wantCatalog)
+	assertEq(t, zone+" overrideCatalogQueryAccess", opts.OverrideCatalogQueryAccess, wantQueryOverride)
+	assertEq(t, zone+" overrideCatalogZoneTransfer", opts.OverrideCatalogZoneTransfer, wantTransferOverride)
+}
+
+func verifyRecordTTL(t *testing.T, apiURL, token, domain, recordType, zone string, wantTTL int) {
+	t.Helper()
+	data := queryDNSAPI(t, apiURL, token,
+		fmt.Sprintf("/api/zones/records/get?domain=%s&zone=%s", domain, zone))
+
+	var result struct {
+		Records []struct {
+			Type string `json:"type"`
+			TTL  int    `json:"ttl"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to parse records for %s: %v", domain, err)
+	}
+	for _, r := range result.Records {
+		if strings.EqualFold(r.Type, recordType) {
+			assertEq(t, domain+" "+recordType+" ttl", r.TTL, wantTTL)
 			return
 		}
 	}
@@ -881,6 +1124,8 @@ func verifyDNSSettingsFull(t *testing.T, apiURL, token string) {
 		EnableDnsOverUdpProxy    bool `json:"enableDnsOverUdpProxy"`
 		EnableDnsOverTcpProxy    bool `json:"enableDnsOverTcpProxy"`
 		EnableDnsOverHttp3       bool `json:"enableDnsOverHttp3"`
+		DnssecValidation         bool `json:"dnssecValidation"`
+		MaxStatFileDays          int  `json:"maxStatFileDays"`
 		TsigKeys                 []struct {
 			KeyName       string `json:"keyName"`
 			AlgorithmName string `json:"algorithmName"`
@@ -936,6 +1181,9 @@ func verifyDNSSettingsFull(t *testing.T, apiURL, token string) {
 	assertEq(t, "enableDnsOverUdpProxy", settings.EnableDnsOverUdpProxy, true)
 	assertEq(t, "enableDnsOverTcpProxy", settings.EnableDnsOverTcpProxy, true)
 	assertEq(t, "enableDnsOverHttp3", settings.EnableDnsOverHttp3, true)
+	// Server defaults are true and 365; these prove explicit false and 0 are sent.
+	assertEq(t, "dnssecValidation", settings.DnssecValidation, false)
+	assertEq(t, "maxStatFileDays", settings.MaxStatFileDays, 0)
 
 	// Verify TSIG keys
 	tsigNames := make(map[string]string)

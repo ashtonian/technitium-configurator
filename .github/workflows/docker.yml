@@ -1,4 +1,4 @@
-name: Build, Push & Release
+name: Test, Build, Push & Release
 
 on:
   workflow_dispatch:
@@ -8,50 +8,138 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: docker.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: |
+          go vet ./...
+          go vet -tags e2e ./e2e
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          args: --build-tags e2e
+
+      - name: Unit tests
+        run: go test -race -count=1 ./...
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  e2e:
+    # Runs the configurator against real Technitium servers (single node and
+    # a two-node cluster) pinned in e2e/docker-compose*.yaml.
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: End-to-end tests
+        run: go test -tags e2e -v -count=1 -timeout 20m ./e2e/...
+
   build-and-push:
     runs-on: ubuntu-latest
+    needs: [ test, e2e ]
     permissions:
       contents: read
       packages: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to DockerHub
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest=auto tags only semver releases without a prerelease suffix.
+          flavor: |
+            latest=auto
           tags: |
             # Release tags (only on v* tag push)
             type=semver,pattern=v{{version}}
             type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             # Beta tags (on main branch push or manual dispatch)
             type=raw,value=beta,enable={{is_default_branch}}
             type=raw,value=beta-{{date 'YYYYMMDD'}}-{{sha}},enable={{is_default_branch}}
 
+      # The arm64 image once shipped an x86-64 binary (#4). Build each
+      # platform's binary with the publishing step's inputs and check its
+      # architecture and version before anything is pushed. The build is
+      # reproducible, so the push below reuses these layers from the cache.
+      - name: Build binaries for verification
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=local,dest=out
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+
+      - name: Verify binaries
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          for arch in amd64 arm64; do
+            bin="out/linux_${arch}/technitium-configurator"
+            case "$arch" in
+              amd64) want="x86-64" ;;
+              arm64) want="aarch64" ;;
+            esac
+            file "$bin" | tee /dev/stderr | grep -q "$want"
+            # arm64 runs under the QEMU emulator set up above.
+            "$bin" version | tee /dev/stderr | grep -qF "technitium-configurator $VERSION "
+          done
+
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -61,9 +149,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            BUILDKIT_INLINE_CACHE=1
-          provenance: false
-          sbom: false
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          provenance: mode=max
+          sbom: true
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -74,28 +164,43 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Check for release notes file
+      # RELEASE_NOTES.md holds every version; publish only this tag's section
+      # ("## v3.0.0"). A prerelease such as v3.0.0-rc.1 uses its own section
+      # when present, otherwise the section of the version it precedes.
+      - name: Extract release notes
         id: notes
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          if [[ -f RELEASE_NOTES.md ]]; then
-            echo "has_notes=true" >> $GITHUB_OUTPUT
+          extract() {
+            awk -v heading="## $1" '
+              $0 == heading { found = 1; next }
+              found && /^## / { exit }
+              found { lines[++n] = $0 }
+              END {
+                while (n > 0 && (lines[n] ~ /^[[:space:]]*$/ || lines[n] == "---")) n--
+                for (i = 1; i <= n; i++) print lines[i]
+              }' RELEASE_NOTES.md
+          }
+          notes="$RUNNER_TEMP/release-notes.md"
+          extract "$TAG" > "$notes"
+          if [[ ! -s "$notes" ]]; then
+            extract "${TAG%%-*}" > "$notes"
+          fi
+          if [[ -s "$notes" ]]; then
+            echo "path=$notes" >> "$GITHUB_OUTPUT"
           else
-            echo "has_notes=false" >> $GITHUB_OUTPUT
+            echo "::warning::RELEASE_NOTES.md has no section for $TAG; using generated notes"
           fi
 
-      - name: Create GitHub Release (with custom notes)
-        if: steps.notes.outputs.has_notes == 'true'
-        uses: softprops/action-gh-release@v2
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
         with:
-          body_path: RELEASE_NOTES.md
-          generate_release_notes: false
-
-      - name: Create GitHub Release (auto-generated notes)
-        if: steps.notes.outputs.has_notes == 'false'
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.path == '' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}

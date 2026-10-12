@@ -2,56 +2,82 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"reflect"
+	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/ashtonian/technitium-sdk-go/pkg/kube"
-	"github.com/ashtonian/technitium-sdk-go/pkg/technitium"
+	"github.com/ashtonian/technitium-configurator/v3/pkg/kube"
+	"github.com/ashtonian/technitium-configurator/v3/pkg/technitium"
 	"gopkg.in/yaml.v3"
 )
+
+// tokenName is the name API tokens are created under.
+const tokenName = "sdk-token"
 
 // Command represents a command that can be executed
 type Command struct {
 	Name        string
+	Usage       string
 	Description string
-	Run         func(ctx context.Context, cfg *technitium.ClientConfig, args []string) error
+	// MaxArgs is how many arguments the command takes; -1 means any number.
+	MaxArgs int
+	Run     func(ctx context.Context, cfg *technitium.ClientConfig, args []string) error
 }
 
 // Commands is a map of all available commands
 var Commands = map[string]Command{
 	"configure": {
 		Name:        "configure",
-		Description: "Configure DNS server using the provided config file",
+		Usage:       "configure [path...]",
+		Description: "Apply the DNS config file: create what is missing, apply settings and options",
+		MaxArgs:     -1,
 		Run:         runConfigure,
 	},
 	"create-token": {
 		Name:        "create-token",
-		Description: "Create an API token and save it to token.yaml",
+		Usage:       "create-token",
+		Description: "Create an API token, or keep a stored one that is still valid",
 		Run:         runCreateToken,
 	},
 	"change-password": {
 		Name:        "change-password",
-		Description: "Change the password for the current user",
+		Usage:       "change-password",
+		Description: "Change the password for the current user (no-op when already changed)",
 		Run:         runChangePassword,
+	},
+	"export": {
+		Name:        "export",
+		Usage:       "export [file]",
+		Description: "Write the server's configuration as a DNS config file (to stdout, or to file)",
+		MaxArgs:     1,
+		Run:         runExport,
 	},
 	"cluster-state": {
 		Name:        "cluster-state",
+		Usage:       "cluster-state",
 		Description: "Display the current cluster state",
 		Run:         runClusterState,
 	},
 }
 
 // RunCommand executes the specified command with the given configuration
+// ErrUsage marks a command line the CLI cannot run, such as an unknown
+// command or extra arguments; main exits with 2 for it.
+var ErrUsage = errors.New("usage")
+
 func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command string, args []string) error {
 	cmd, ok := Commands[command]
 	if !ok {
-		return fmt.Errorf("unknown command: %s", command)
+		return fmt.Errorf("%w: unknown command %q", ErrUsage, command)
+	}
+	if cmd.MaxArgs >= 0 && len(args) > cmd.MaxArgs {
+		return fmt.Errorf("%w: %s takes at most %d argument(s): %s", ErrUsage, command, cmd.MaxArgs, cmd.Usage)
 	}
 
-	// Validate configuration for the command
 	if err := cfg.Validate(command); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -59,367 +85,324 @@ func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command strin
 	return cmd.Run(ctx, cfg, args)
 }
 
-func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+// newClient builds an API client and waits for the server to answer.
+func newClient(ctx context.Context, cfg *technitium.ClientConfig) (*technitium.Client, error) {
 	client, err := technitium.NewClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.WaitTimeout > 0 {
+		if err := client.WaitReady(ctx, cfg.WaitTimeout, 2*time.Second); err != nil {
+			return nil, err
+		}
+	}
+	return client, nil
+}
+
+// authenticate uses the API token when one is configured, otherwise logs in.
+// authenticate starts a session from the API token, checked with the server
+// first, or from the username and password.
+func authenticate(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig) error {
+	if cfg.APIToken != "" {
+		if _, err := client.TokenUser(ctx, cfg.APIToken); err != nil {
+			return fmt.Errorf("check API token: %w", err)
+		}
+		client.SetToken(cfg.APIToken)
+		return nil
+	}
+	if err := client.Login(ctx, cfg.Username, cfg.Password, ""); err != nil {
+		return fmt.Errorf("login as %q: %w", cfg.Username, err)
+	}
+	return nil
+}
+
+func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+	paths := args
+	if len(paths) == 0 {
+		paths = []string{cfg.ConfigPath}
+	}
+	desired, err := technitium.LoadConfigPaths(paths)
 	if err != nil {
 		return err
 	}
 
-	cfgPath := cfg.ConfigPath
-	if len(args) > 0 {
-		cfgPath = args[0]
-	}
-
-	data, err := os.ReadFile(cfgPath)
+	client, err := newClient(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to read config: %w", err)
+		return err
+	}
+	if err := authenticateConfigure(ctx, client, cfg, desired.Cluster); err != nil {
+		return err
 	}
 
-	var dnsCfg technitium.Config
-	if err := yaml.Unmarshal(data, &dnsCfg); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
+	a := &applier{client: client, cfg: cfg, desired: desired}
+	return a.run(ctx)
+}
+
+// authenticateConfigure logs in for configure. Joining a cluster replaces a
+// secondary's users with the primary's and drops its own API tokens, so
+// when the node's token or credentials no longer work, the primary's
+// credentials from the cluster section are tried. A one-time password
+// cannot be reused on later runs, so that user must not need one.
+func authenticateConfigure(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig, cc *technitium.ClusterConfig) error {
+	err := authenticate(ctx, client, cfg)
+	if err == nil || cc == nil || cc.Mode != "secondary" || cc.PrimaryPassword == "" {
+		return err
+	}
+	if cfg.APIToken == "" && cc.PrimaryUsername == cfg.Username && cc.PrimaryPassword == cfg.Password {
+		return err
+	}
+	perr := client.Login(ctx, cc.PrimaryUsername, cc.PrimaryPassword, "")
+	switch {
+	case perr == nil:
+		slog.Info("Logged in with the primary's credentials; this node has joined the cluster", "user", cc.PrimaryUsername)
+		return nil
+	case errors.Is(perr, technitium.ErrTwoFactorRequired):
+		return fmt.Errorf("%w; the primary's user %q also needs a one-time password, which only works for the join; use a primary user without two-factor authentication for later runs", err, cc.PrimaryUsername)
+	default:
+		return err
+	}
+}
+
+func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+	client, err := newClient(ctx, cfg)
+	if err != nil {
+		return err
 	}
 
-	// Apply DNS settings BEFORE cluster init.  Cluster init creates a
-	// cluster-catalog zone with its own TSIG key; if we set DNS settings
-	// (including the user's TSIG key list) afterward, the API rejects the
-	// call because it would remove the cluster-catalog key.  By applying
-	// DNS settings first the user's keys are set cleanly, and cluster init
-	// adds its own key on top.
-	//
-	// The merge logic below is still kept as a safety net for re-runs where
-	// the cluster already exists and has internal TSIG keys.
-	if !reflect.DeepEqual(dnsCfg.DNSSettings, technitium.DnsSettings{}) {
-		// Merge configured TSIG keys with any existing server keys (e.g.
-		// cluster-internal catalog keys from a previous cluster init) so we
-		// don't accidentally remove keys the server needs on re-run.
-		existing, err := client.GetDNSSettings(ctx)
+	var k8s *kube.K8sClient
+	var secretToken, fileToken string
+	if cfg.K8sSecretName != "" {
+		k8s, err = kube.NewK8sClient()
 		if err != nil {
-			slog.Warn("failed to fetch existing DNS settings for TSIG merge, proceeding without merge", "error", err)
+			return fmt.Errorf("create kubernetes client: %w", err)
 		}
-		if existing != nil && len(existing.TsigKeys) > 0 {
-			cfgCount := len(dnsCfg.DNSSettings.TsigKeys)
-			dnsCfg.DNSSettings.TsigKeys = mergeTsigKeys(existing.TsigKeys, dnsCfg.DNSSettings.TsigKeys)
-			slog.Debug("merged TSIG keys", "server", len(existing.TsigKeys), "configured", cfgCount, "merged", len(dnsCfg.DNSSettings.TsigKeys))
+		secretToken, err = k8s.CheckSecretToken(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey)
+		if err != nil && !kube.NotFound(err) && !kube.TokenNotFound(err) {
+			return fmt.Errorf("read token secret %s/%s: %w", cfg.K8sSecretNamespace, cfg.K8sSecretName, err)
 		}
-
-		if err := client.SetDNSSettings(ctx, dnsCfg.DNSSettings); err != nil {
-			return fmt.Errorf("failed to set DNS settings: %w", err)
-		}
-		slog.Info("DNS settings configured", "server", cfg.APIURL)
 	}
-
-	// Apply cluster configuration AFTER DNS settings (see comment above).
-	if dnsCfg.Cluster != nil {
-		if err := applyCluster(ctx, client, cfg, dnsCfg.Cluster); err != nil {
+	if cfg.TokenPath != "" {
+		fileToken, err = readTokenFile(cfg.TokenPath)
+		if err != nil {
 			return err
 		}
 	}
 
-	// Configure zones
-	for _, z := range dnsCfg.Zones {
-		zoneReq := technitium.ZoneCreateRequest{
-			Zone:                       z.Zone,
-			Type:                       z.Type,
-			PrimaryNameServerAddresses: z.PrimaryNameServerAddresses,
-			ZoneTransferProtocol:       z.ZoneTransferProtocol,
-			TsigKeyName:                z.TsigKeyName,
-			ValidateZone:               z.ValidateZone,
-			Protocol:                   z.Protocol,
-			Forwarder:                  z.Forwarder,
-			DnssecValidation:           z.DnssecValidation,
-			ProxyType:                  z.ProxyType,
-			ProxyAddress:               z.ProxyAddress,
-			ProxyPort:                  z.ProxyPort,
-			ProxyUsername:              z.ProxyUsername,
-			ProxyPassword:              z.ProxyPassword,
-			Catalog:                    z.Catalog,
-			UseSoaSerialDateScheme:     z.UseSoaSerialDateScheme,
-			InitializeForwarder:        z.InitializeForwarder,
-		}
-
-		if _, err := client.CreateZone(ctx, zoneReq); err != nil {
-			slog.Error("Failed to create zone", "zone", z.Zone, "error", err)
-		}
-
-		opts := technitium.ZoneOptionsUpdate{
-			Zone:                       z.Zone,
-			Catalog:                    z.Catalog,
-			PrimaryNameServerAddresses: z.PrimaryNameServerAddresses,
-			PrimaryXfrProto:            z.ZoneTransferProtocol,
-			PrimaryXfrTsigKey:          z.TsigKeyName,
-			ValidateZone:               z.ValidateZone,
-		}
-
-		if z.ACLSettings != nil {
-			opts.ACLSettings = *z.ACLSettings
-		}
-
-		// Retry zone options update — the API sometimes rejects immediate updates
-		var zoneOptsErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			if attempt > 0 {
-				time.Sleep(1 * time.Second)
-			}
-			if _, zoneOptsErr = client.SetZoneOptions(ctx, opts); zoneOptsErr == nil {
-				break
-			}
-		}
-		if zoneOptsErr != nil {
-			slog.Error("Failed to update zone options", "zone", z.Zone, "error", zoneOptsErr)
-		} else {
-			slog.Info("Zone configured", "zone", z.Zone)
-		}
-	}
-
-	// Configure records
-	for _, r := range dnsCfg.Records {
-		if _, err := client.AddRecord(ctx, r); err != nil {
-			slog.Error("Failed to add record", "domain", r.Domain, "error", err)
-		} else {
-			slog.Info("Record configured", "domain", r.Domain)
-		}
-	}
-
-	// Install and configure apps
-	for _, app := range dnsCfg.Apps {
-		slog.Info("Installing app", "app", app.Name)
-
-		// Install the app
-		req := technitium.AppInstallRequest{
-			Name: app.Name,
-			Url:  app.Url,
-		}
-		if err := client.InstallApp(ctx, req); err != nil {
-			slog.Error("Failed to install app", "error", err, "app", app.Name)
-		}
-
-		slog.Info("Configuring app", "app", app.Name)
-		config, err := app.GetConfigJSON()
-		if err != nil {
-			slog.Error("Failed to get app config", "error", err, "app", app.Name)
+	// A stored token is reused only if the server still accepts it for the
+	// configured user; a redeployed server with fresh storage forgets it.
+	token := ""
+	for _, candidate := range []string{secretToken, fileToken} {
+		if candidate == "" {
 			continue
 		}
-
-		reqConfig := technitium.AppConfigRequest{
-			Name:   app.Name,
-			Config: config,
+		user, err := client.TokenUser(ctx, candidate)
+		switch {
+		case err == nil && strings.EqualFold(user, cfg.Username):
+			token = candidate
+		case err == nil:
+			slog.Warn("Stored API token belongs to another user; ignoring it", "tokenUser", user, "user", cfg.Username)
+		case errors.Is(err, technitium.ErrInvalidToken):
+			slog.Info("Stored API token is no longer valid; creating a new one")
+		default:
+			return fmt.Errorf("validate stored API token: %w", err)
 		}
-
-		if _, err := client.SetAppConfig(ctx, reqConfig); err != nil {
-			slog.Error("Failed to set app config", "error", err, "app", app.Name)
-		} else {
-			slog.Info("App configured", "app", app.Name)
+		if token != "" {
+			break
 		}
 	}
 
-	slog.Info("Configuration complete")
+	if token == "" {
+		resp, err := client.CreateToken(ctx, cfg.Username, cfg.Password, tokenName)
+		if err != nil {
+			return fmt.Errorf("create API token: %w", err)
+		}
+		token = resp.Token
+		slog.Info("Created API token", "user", cfg.Username, "tokenName", tokenName)
+	} else {
+		slog.Info("Stored API token is valid; reusing it", "user", cfg.Username)
+	}
+
+	if k8s != nil && secretToken != token {
+		if err := k8s.CreateOrUpdateSecret(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey, token); err != nil {
+			return fmt.Errorf("save API token to secret %s/%s: %w", cfg.K8sSecretNamespace, cfg.K8sSecretName, err)
+		}
+		slog.Info("Saved API token to Kubernetes secret", "namespace", cfg.K8sSecretNamespace, "name", cfg.K8sSecretName)
+	}
+	if cfg.TokenPath != "" && fileToken != token {
+		rec := technitium.CreateTokenResponse{Username: cfg.Username, TokenName: tokenName, Token: token}
+		if err := writeTokenFile(cfg.TokenPath, rec); err != nil {
+			return err
+		}
+		slog.Info("Saved API token to file", "path", cfg.TokenPath)
+	}
 	return nil
 }
 
-func applyCluster(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig, cc *technitium.ClusterConfig) error {
-	switch cc.Mode {
-	case "primary":
-		if cc.Domain == "" {
-			return fmt.Errorf("cluster domain is required for primary mode")
-		}
-		if cc.NodeIPs == "" {
-			return fmt.Errorf("cluster nodeIPs is required for primary mode")
-		}
-	case "secondary":
-		if cc.NodeIPs == "" {
-			return fmt.Errorf("cluster nodeIPs is required for secondary mode")
-		}
-		if cc.PrimaryURL == "" {
-			return fmt.Errorf("cluster primaryURL is required for secondary mode")
-		}
-		if cc.PrimaryUsername == "" {
-			return fmt.Errorf("cluster primaryUsername is required for secondary mode")
-		}
-		if cc.PrimaryPassword == "" {
-			return fmt.Errorf("cluster primaryPassword is required for secondary mode")
-		}
-	default:
-		return fmt.Errorf("invalid cluster mode %q: must be \"primary\" or \"secondary\"", cc.Mode)
+func readTokenFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
 	}
-
-	state, err := client.GetClusterState(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get cluster state: %w", err)
+		return "", fmt.Errorf("read token file: %w", err)
 	}
+	var rec technitium.CreateTokenResponse
+	if err := yaml.Unmarshal(data, &rec); err != nil {
+		return "", fmt.Errorf("parse token file %s: %w", path, err)
+	}
+	return rec.Token, nil
+}
 
-	if state.ClusterInitialized {
-		slog.Info("Cluster already initialized, skipping",
-			"domain", state.ClusterDomain,
-			"nodes", len(state.Nodes))
+// writeTokenFile replaces path atomically with a 0600 file.
+func writeTokenFile(path string, rec technitium.CreateTokenResponse) error {
+	data, err := yaml.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("encode token file: %w", err)
+	}
+	if err := writeFilePrivate(path, data); err != nil {
+		return fmt.Errorf("write token file: %w", err)
+	}
+	return nil
+}
+
+// writeFilePrivate replaces path with a 0600 file, atomically where it can.
+// When the file exists but cannot be replaced, because it is bind-mounted
+// into a container or its directory is read-only, it is overwritten in
+// place instead.
+func writeFilePrivate(path string, data []byte) error {
+	err := replaceFile(path, data)
+	if err == nil {
 		return nil
 	}
-
-	if cc.Mode == "primary" {
-		if _, err := client.ClusterInit(ctx, cc.Domain, cc.NodeIPs); err != nil {
-			return fmt.Errorf("failed to initialize cluster: %w", err)
-		}
-		slog.Info("Cluster initialized", "domain", cc.Domain)
-	} else {
-		req := technitium.ClusterJoinRequest{
-			SecondaryNodeIPs:    cc.NodeIPs,
-			PrimaryNodeURL:      cc.PrimaryURL,
-			PrimaryNodeIP:       cc.PrimaryIP,
-			PrimaryNodeUsername: cc.PrimaryUsername,
-			PrimaryNodePassword: cc.PrimaryPassword,
-			PrimaryNodeTotp:     cc.PrimaryTotp,
-			IgnoreCertErrors:    cc.IgnoreCertErrors,
-		}
-		if _, err := client.ClusterJoin(ctx, req); err != nil {
-			return fmt.Errorf("failed to join cluster: %w", err)
-		}
-		slog.Info("Joined cluster", "primaryURL", cc.PrimaryURL)
+	if _, statErr := os.Stat(path); statErr != nil {
+		return err
 	}
-
-	// After cluster init/join the server's internal state changes and the
-	// previous session token may be invalidated.  Wait briefly for the
-	// server to stabilize, then re-authenticate so the rest of the
-	// configure pipeline (DNS settings, zones, records, …) has a valid
-	// session.
-	slog.Info("Waiting for server to stabilize after cluster operation")
-	time.Sleep(5 * time.Second)
-
-	if cfg.Username != "" && cfg.Password != "" {
-		var loginErr error
-		for i := 0; i < 3; i++ {
-			if i > 0 {
-				time.Sleep(5 * time.Second)
-			}
-			if _, loginErr = client.Login(ctx, cfg.Username, cfg.Password); loginErr == nil {
-				slog.Info("Re-authenticated after cluster operation")
-
-				// Apply cluster timing options (primary only)
-				if cc.Mode == "primary" {
-					optReq := technitium.ClusterOptionsRequest{
-						HeartbeatRefreshIntervalSecs: cc.HeartbeatRefreshIntervalSecs,
-						HeartbeatRetryIntervalSecs:   cc.HeartbeatRetryIntervalSecs,
-						ConfigRefreshIntervalSecs:    cc.ConfigRefreshIntervalSecs,
-						ConfigRetryIntervalSecs:      cc.ConfigRetryIntervalSecs,
-					}
-					if !optReq.IsEmpty() {
-						if err := client.SetClusterOptions(ctx, optReq); err != nil {
-							return fmt.Errorf("failed to set cluster options: %w", err)
-						}
-						slog.Info("Cluster options configured",
-							"configRefreshInterval", optReq.ConfigRefreshIntervalSecs,
-							"configRetryInterval", optReq.ConfigRetryIntervalSecs,
-							"heartbeatRefreshInterval", optReq.HeartbeatRefreshIntervalSecs,
-							"heartbeatRetryInterval", optReq.HeartbeatRetryIntervalSecs)
-					}
-				}
-
-				return nil
-			}
-			slog.Debug("Re-login attempt failed, retrying", "attempt", i+1, "error", loginErr)
-		}
-		return fmt.Errorf("failed to re-authenticate after cluster operation: %w", loginErr)
+	if werr := writeInPlace(path, data); werr != nil {
+		return fmt.Errorf("%w (replacing the file failed: %v)", werr, err)
 	}
-
 	return nil
 }
 
-func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client, err := technitium.NewClient(cfg)
+func replaceFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return err
 	}
-
-	// Create a single K8s client if needed for secret operations
-	var k8s *kube.K8sClient
-	if cfg.K8sSecretName != "" {
-		k8s, err = kube.NewK8sClient()
-		if err != nil {
-			return fmt.Errorf("failed to create k8s client: %w", err)
-		}
-
-		existingToken, err := k8s.CheckSecretToken(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey)
-		if err != nil {
-			slog.Warn("Failed to check k8s secret", "error", err, "secret", cfg.K8sSecretName)
-		} else if existingToken != "" {
-			slog.Warn("token already exists in k8s secret", "secret", fmt.Sprintf("%s/%s", cfg.K8sSecretNamespace, cfg.K8sSecretName))
-			return nil
-		}
+	// After a successful rename the temp name no longer exists; this only cleans up failures.
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
 	}
-
-	// Check for existing token in file if configured
-	if cfg.TokenPath != "" {
-		if _, err := os.Stat(cfg.TokenPath); err == nil {
-			data, err := os.ReadFile(cfg.TokenPath)
-			if err != nil {
-				return fmt.Errorf("failed to read token file: %w", err)
-			}
-			var existingToken technitium.CreateTokenResponse
-			if err := yaml.Unmarshal(data, &existingToken); err != nil {
-				return fmt.Errorf("failed to parse token file: %w", err)
-			}
-			if existingToken.Token != "" {
-				slog.Warn("token already exists in file", "path", cfg.TokenPath)
-				return nil
-			}
-		}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
 	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
 
-	// Create the token
-	tokenResp, err := client.CreateToken(ctx, cfg.Username, cfg.Password, "sdk-token")
+func runExport(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+	client, err := newClient(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to create token: %w", err)
+		return err
 	}
-
-	// Save token to Kubernetes secret if configured
-	if k8s != nil {
-		if err := k8s.CreateOrUpdateSecret(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey, tokenResp.Token); err != nil {
-			return fmt.Errorf("failed to save token to k8s secret: %w", err)
-		}
-		slog.Info("Token saved to k8s secret", "namespace", cfg.K8sSecretNamespace, "name", cfg.K8sSecretName)
+	if err := authenticate(ctx, client, cfg); err != nil {
+		return err
 	}
-
-	// Save token to file if configured
-	if cfg.TokenPath != "" {
-		data, err := yaml.Marshal(tokenResp)
-		if err != nil {
-			return fmt.Errorf("failed to marshal token config: %w", err)
-		}
-		if err := os.WriteFile(cfg.TokenPath, data, 0600); err != nil {
-			return fmt.Errorf("failed to write token file: %w", err)
-		}
-		slog.Info("Token saved to file", "path", cfg.TokenPath)
+	conf, notes, err := technitium.Export(ctx, client)
+	if err != nil {
+		return err
 	}
-
-	if k8s == nil && cfg.TokenPath == "" {
-		slog.Info("Token created successfully (not saved to file or k8s secret)")
+	out, err := technitium.MarshalExport(conf, cfg.APIURL, notes)
+	if err != nil {
+		return err
 	}
-
+	// An export that does not load is a bug; refuse it rather than write it.
+	if _, err := technitium.LoadConfig(technitium.Source{Name: "export", Data: out}); err != nil {
+		return fmt.Errorf("the export does not load as a config, so it was not written: %w", err)
+	}
+	if len(args) == 0 {
+		_, err := os.Stdout.Write(out)
+		return err
+	}
+	if err := writeFilePrivate(args[0], out); err != nil {
+		return fmt.Errorf("write %s: %w", args[0], err)
+	}
+	slog.Info("Exported configuration", "path", args[0], "zones", len(conf.Zones), "records", len(conf.Records), "apps", len(conf.Apps))
 	return nil
+}
+
+// writeInPlace overwrites path, making it private before any data is
+// written. A file this user cannot chmod is used only if it is private
+// already.
+func writeInPlace(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		info, statErr := f.Stat()
+		if statErr != nil || info.Mode().Perm()&0o077 != 0 {
+			_ = f.Close()
+			return fmt.Errorf("cannot make %s private (mode %v): %w", path, modeOf(info), err)
+		}
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func modeOf(info os.FileInfo) os.FileMode {
+	if info == nil {
+		return 0
+	}
+	return info.Mode().Perm()
 }
 
 func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client, err := technitium.NewClient(cfg)
+	client, err := newClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
 
-	if err := client.ChangePassword(ctx, cfg.Password, cfg.NewPassword); err != nil {
-		return fmt.Errorf("failed to change password: %w", err)
+	// A re-run must succeed, so a working new password means the change is
+	// already done. Trying it first keeps steady-state runs free of failed
+	// logins, which the server counts toward blocking the client address.
+	if err := client.Login(ctx, cfg.Username, cfg.NewPassword, ""); err == nil {
+		slog.Info("Password is already set to the new value", "user", cfg.Username)
+		return nil
 	}
-
-	slog.Info("Password changed successfully")
+	if err := client.Login(ctx, cfg.Username, cfg.Password, ""); err != nil {
+		return fmt.Errorf("login as %q with the current password: %w", cfg.Username, err)
+	}
+	if err := client.ChangePassword(ctx, cfg.Password, cfg.NewPassword); err != nil {
+		return fmt.Errorf("change password for %q: %w", cfg.Username, err)
+	}
+	slog.Info("Password changed", "user", cfg.Username)
 	return nil
 }
 
 func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
-	client, err := technitium.NewClient(cfg)
+	client, err := newClient(ctx, cfg)
 	if err != nil {
+		return err
+	}
+	if err := authenticate(ctx, client, cfg); err != nil {
 		return err
 	}
 
 	state, err := client.GetClusterState(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get cluster state: %w", err)
+		return err
 	}
 
 	slog.Info("Cluster state",
@@ -434,30 +417,13 @@ func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []s
 			"name", n.Name,
 			"type", n.Type,
 			"state", n.State,
+			"version", n.Version,
 			"url", n.URL,
 			"ipAddresses", n.IPAddresses,
 			"lastSeen", n.LastSeen,
-			"upSince", n.UpSince)
+			"upSince", n.UpSince,
+			"configLastSynced", n.ConfigLastSynced)
 	}
 
 	return nil
-}
-
-// mergeTsigKeys combines existing server TSIG keys with user-configured keys.
-// Configured keys take precedence (by keyName); existing keys not present in
-// the config (e.g. cluster-catalog keys) are preserved.
-func mergeTsigKeys(existing, configured []technitium.TsigKey) []technitium.TsigKey {
-	configuredNames := make(map[string]bool, len(configured))
-	for _, k := range configured {
-		configuredNames[k.KeyName] = true
-	}
-
-	merged := make([]technitium.TsigKey, len(configured))
-	copy(merged, configured)
-	for _, k := range existing {
-		if !configuredNames[k.KeyName] {
-			merged = append(merged, k)
-		}
-	}
-	return merged
 }
