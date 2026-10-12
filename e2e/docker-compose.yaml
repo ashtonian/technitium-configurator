@@ -1,6 +1,6 @@
 services:
   dns:
-    image: technitium/dns-server:15.5.1
+    image: technitium/dns-server:15.6.1
     ports:
       - "${DNS_PORT}:5380/tcp"
     environment:

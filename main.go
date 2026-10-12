@@ -2,129 +2,130 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
-	"strings"
+	"os/signal"
+	"sort"
+	"syscall"
 
-	"github.com/ashtonian/technitium-sdk-go/cmd"
-	"github.com/ashtonian/technitium-sdk-go/pkg/technitium"
+	"github.com/ashtonian/technitium-configurator/v3/cmd"
+	"github.com/ashtonian/technitium-configurator/v3/pkg/technitium"
 )
 
+// Set at build time with -ldflags "-X main.version=...".
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
+const envHelp = `Environment variables:
+  DNS_API_URL               URL of the Technitium web service (required)
+  DNS_API_TOKEN             API token; used instead of username and password
+  DNS_USERNAME              Username for login, create-token and change-password
+  DNS_PASSWORD              Password (the current one for change-password)
+  DNS_NEW_PASSWORD          New password for change-password
+  DNS_CLIENT_CONFIG         Client config file (same as --config)
+  DNS_CONFIG_PATH           DNS config file for configure (default: config.yaml)
+  DNS_TOKEN_PATH            Token file for create-token
+  DNS_TIMEOUT               Timeout for each API call (default: 30s)
+  DNS_WAIT_TIMEOUT          Wait for the web service to answer (default: 60s, 0 disables)
+  DNS_LOG_LEVEL             debug, info, warn or error (default: info)
+  DNS_K8S_SECRET_NAME       Kubernetes Secret create-token stores the token in
+  DNS_K8S_SECRET_NAMESPACE  Namespace of that Secret (default: default)
+  DNS_K8S_SECRET_KEY        Key in that Secret (default: api-token)
+`
+
 func main() {
-	// Create a mutable log level that starts at debug
+	os.Exit(run(os.Args[1:], os.Stdout))
+}
+
+// run executes the CLI. Logs go to stderr so stdout carries only command
+// output, such as export's YAML.
+func run(args []string, stdout io.Writer) int {
 	logLevel := new(slog.LevelVar)
-	logLevel.Set(slog.LevelDebug)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 
-	// Create a single handler with source information for debugging
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level:     logLevel,
-		AddSource: true, // Include source file/line in debug logs
-	})
-	slog.SetDefault(slog.New(handler))
+	flags := flag.NewFlagSet("technitium-configurator", flag.ContinueOnError)
+	flags.SetOutput(stdout)
+	clientConfigPath := flags.String("config", "", "client config file with connection and auth settings (env DNS_CLIENT_CONFIG)")
+	tokenPath := flags.String("token-path", "", "token file for create-token (env DNS_TOKEN_PATH)")
+	logLevelFlag := flags.String("log-level", "", "debug, info, warn or error (env DNS_LOG_LEVEL)")
+	flags.Usage = func() { usage(flags) }
 
-	// Define root flags first
-	root := flag.NewFlagSet("technitium-cli", flag.ExitOnError)
-	configPath := root.String("config", "config.yaml", "Path to client configuration file (default: ./config.yaml)")
-	tokenPath := root.String("token-path", "", "Path to token file (default: ./token.yaml)")
-	logLevelFlag := root.String("log-level", "", "Override log level (debug, info, warn, error)")
-
-	// Set up usage message
-	root.Usage = func() {
-		fmt.Fprintf(root.Output(),
-			"Usage: %s <command> [options]\n\nOptions:\n", os.Args[0])
-		root.PrintDefaults()
-		fmt.Fprintf(root.Output(), "\nCommands:\n")
-		for name, cmd := range cmd.Commands {
-			fmt.Fprintf(root.Output(), "  %-20s %s\n", name, cmd.Description)
-		}
-		fmt.Fprintf(root.Output(),
-			"\nConfiguration:\n"+
-				"  Configuration can be provided via:\n"+
-				"  1. YAML file (default: ./config.yaml)\n"+
-				"  2. Environment variables (overrides YAML)\n"+
-				"Environment variables:\n"+
-				"  DNS_API_URL               Required for all commands\n"+
-				"  DNS_API_TOKEN             Optional, used for API token authentication\n"+
-				"  DNS_USERNAME              Required for create-token and change-password\n"+
-				"  DNS_PASSWORD              Required for create-token and change-password\n"+
-				"  DNS_NEW_PASSWORD          Required for change-password\n"+
-				"  DNS_TOKEN_PATH            Path to token file (default: token.yaml)\n"+
-				"  DNS_CONFIG_PATH           Path to config file (default: config.yaml)\n"+
-				"  DNS_TIMEOUT               Timeout for API calls (default: 30s)\n"+
-				"  DNS_LOG_LEVEL             Logging level (debug, info, warn, error)\n"+
-				"  DNS_K8S_SECRET_NAME       Kubernetes secret name for token storage\n"+
-				"  DNS_K8S_SECRET_NAMESPACE  Kubernetes secret namespace (default: default)\n"+
-				"  DNS_K8S_SECRET_KEY        Kubernetes secret key (default: api-token)\n")
+	if len(args) == 0 {
+		usage(flags)
+		return 2
+	}
+	command := args[0]
+	switch command {
+	case "version", "--version", "-version":
+		_, _ = fmt.Fprintf(stdout, "technitium-configurator %s (commit %s, built %s)\n", version, commit, buildDate)
+		return 0
+	case "help", "--help", "-help", "-h":
+		usage(flags)
+		return 0
+	}
+	if err := flags.Parse(args[1:]); err != nil {
+		return 2
 	}
 
-	if len(os.Args) < 2 {
-		root.Usage()
-		os.Exit(1)
-	}
-
-	// Parse root flags
-	if err := root.Parse(os.Args[2:]); err != nil {
-		slog.Error("Failed to parse flags", "error", err)
-		os.Exit(1)
-	}
-
-	// Load configuration
+	// Precedence: defaults < client config file < environment < flags.
 	cfg := technitium.DefaultConfig()
-	cfg.ConfigPath = *configPath
-	cfg.TokenPath = *tokenPath
-
-	// Mark ConfigPath as explicitly set if the flag was provided
-	root.Visit(func(f *flag.Flag) {
-		if f.Name == "config" {
-			cfg.ConfigPathSet = true
-		}
-	})
-
-	// Load from file if it exists
-	if err := cfg.LoadFromFile(cfg.ConfigPath); err != nil {
-		slog.Warn("Failed to load config from file", "error", err, "path", cfg.ConfigPath)
+	if *clientConfigPath == "" {
+		*clientConfigPath = os.Getenv("DNS_CLIENT_CONFIG")
 	}
-
-	// Load from environment (overrides file)
+	if *clientConfigPath != "" {
+		if err := cfg.LoadFromFile(*clientConfigPath); err != nil {
+			slog.Error("Invalid client config", "error", err)
+			return 1
+		}
+	}
 	if err := cfg.LoadFromEnv(); err != nil {
-		slog.Error("Failed to load config from environment", "error", err)
-		os.Exit(1)
+		slog.Error("Invalid environment", "error", err)
+		return 1
 	}
-
-	// Apply log level from flag if set, otherwise use config
+	if *tokenPath != "" {
+		cfg.TokenPath = *tokenPath
+	}
 	if *logLevelFlag != "" {
-		switch strings.ToLower(*logLevelFlag) {
-		case "debug":
-			logLevel.Set(slog.LevelDebug)
-		case "info":
-			logLevel.Set(slog.LevelInfo)
-		case "warn":
-			logLevel.Set(slog.LevelWarn)
-		case "error":
-			logLevel.Set(slog.LevelError)
-		default:
-			slog.Error("Invalid log level", "level", *logLevelFlag)
-			os.Exit(1)
+		cfg.LogLevel = technitium.LogLevel(*logLevelFlag)
+	}
+	logLevel.Set(cfg.GetLogLevel())
+	if logLevel.Level() == slog.LevelDebug {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel, AddSource: true})))
+	}
+	slog.Debug("Starting", "version", version, "commit", commit, "command", command)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := cmd.RunCommand(ctx, cfg, command, flags.Args()); err != nil {
+		slog.Error("Command failed", "error", err, "command", command)
+		if errors.Is(err, cmd.ErrUsage) {
+			usage(flags)
+			return 2
 		}
-	} else {
-		logLevel.Set(cfg.GetLogLevel())
+		return 1
 	}
+	return 0
+}
 
-	// Swap to a handler without source information if not in debug mode
-	if logLevel.Level() != slog.LevelDebug {
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level:     logLevel,
-			AddSource: false,
-		})
-		slog.SetDefault(slog.New(handler))
+func usage(flags *flag.FlagSet) {
+	out := flags.Output()
+	_, _ = fmt.Fprintf(out, "Usage: technitium-configurator <command> [flags] [args]\n\nCommands:\n")
+	names := make([]string, 0, len(cmd.Commands))
+	for name := range cmd.Commands {
+		names = append(names, name)
 	}
-
-	// ---------- run the sub-command ----------
-	ctx := context.Background()
-	if err := cmd.RunCommand(ctx, cfg, os.Args[1], root.Args()); err != nil {
-		slog.Error("Command failed", "error", err, "command", os.Args[1])
-		os.Exit(1)
+	sort.Strings(names)
+	for _, name := range names {
+		_, _ = fmt.Fprintf(out, "  %-18s %s\n", cmd.Commands[name].Usage, cmd.Commands[name].Description)
 	}
+	_, _ = fmt.Fprintf(out, "  %-18s %s\n\nFlags (after the command):\n", "version", "Print the version")
+	flags.PrintDefaults()
+	_, _ = fmt.Fprintf(out, "\n%s", envHelp)
 }

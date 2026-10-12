@@ -1,7 +1,10 @@
 package technitium
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"reflect"
@@ -21,43 +24,48 @@ const (
 	LogLevelError LogLevel = "error"
 )
 
-// ClientConfig represents the client configuration structure
+// ClientConfig holds how the configurator connects and authenticates, and
+// where it reads and writes files. Values come from defaults, then the
+// optional client config file, then environment variables, then flags.
 type ClientConfig struct {
-	APIURL        string        `yaml:"api_url" env:"DNS_API_URL"`
-	APIToken      string        `yaml:"api_token" env:"DNS_API_TOKEN"`
-	Username      string        `yaml:"username" env:"DNS_USERNAME"`
-	Password      string        `yaml:"password" env:"DNS_PASSWORD"`
-	NewPassword   string        `yaml:"new_password" env:"DNS_NEW_PASSWORD"`
-	ConfigPath    string        `yaml:"-" env:"DNS_CONFIG_PATH"` // Not stored in YAML, set via flag or env
-	ConfigPathSet bool          `yaml:"-"`                       // Tracks whether ConfigPath was explicitly set by a flag
-	TokenPath     string        `yaml:"token_path" env:"DNS_TOKEN_PATH"`
-	Timeout       time.Duration `yaml:"timeout" env:"DNS_TIMEOUT"`
-	LogLevel      LogLevel      `yaml:"log_level" env:"DNS_LOG_LEVEL"`
-	// Kubernetes secret configuration
-	K8sSecretName      string `yaml:"k8s_secret_name" env:"DNS_K8S_SECRET_NAME"`           // Name of the secret to store token in
-	K8sSecretNamespace string `yaml:"k8s_secret_namespace" env:"DNS_K8S_SECRET_NAMESPACE"` // Namespace of the secret (default: default)
-	K8sSecretKey       string `yaml:"k8s_secret_key" env:"DNS_K8S_SECRET_KEY"`             // Key in the secret to store token (default: token)
+	APIURL      string `yaml:"api_url" env:"DNS_API_URL"`
+	APIToken    string `yaml:"api_token" env:"DNS_API_TOKEN"`
+	Username    string `yaml:"username" env:"DNS_USERNAME"`
+	Password    string `yaml:"password" env:"DNS_PASSWORD"`
+	NewPassword string `yaml:"new_password" env:"DNS_NEW_PASSWORD"`
+	// ConfigPath is the DNS config file `configure` reads when no file
+	// argument is given.
+	ConfigPath string        `yaml:"config_path" env:"DNS_CONFIG_PATH"`
+	TokenPath  string        `yaml:"token_path" env:"DNS_TOKEN_PATH"`
+	Timeout    time.Duration `yaml:"timeout" env:"DNS_TIMEOUT"`
+	// WaitTimeout bounds how long commands wait for /api/status to answer,
+	// at start and after settings restart the web service. Zero disables
+	// the wait.
+	WaitTimeout time.Duration `yaml:"wait_timeout" env:"DNS_WAIT_TIMEOUT"`
+	LogLevel    LogLevel      `yaml:"log_level" env:"DNS_LOG_LEVEL"`
+	// Kubernetes Secret that create-token stores the token in.
+	K8sSecretName      string `yaml:"k8s_secret_name" env:"DNS_K8S_SECRET_NAME"`
+	K8sSecretNamespace string `yaml:"k8s_secret_namespace" env:"DNS_K8S_SECRET_NAMESPACE"`
+	K8sSecretKey       string `yaml:"k8s_secret_key" env:"DNS_K8S_SECRET_KEY"`
 }
 
-// DefaultConfig returns a new ClientConfig with default values
+// DefaultConfig returns a ClientConfig with default values.
 func DefaultConfig() *ClientConfig {
 	return &ClientConfig{
-		ConfigPath:         "config.yaml", // Default config file path
-		TokenPath:          "",            // Default token file path
+		ConfigPath:         "config.yaml",
 		Timeout:            30 * time.Second,
-		LogLevel:           LogLevelInfo, // Default log level
-		K8sSecretNamespace: "default",    // Default namespace
-		K8sSecretKey:       "api-token",  // Default secret key
+		WaitTimeout:        60 * time.Second,
+		LogLevel:           LogLevelInfo,
+		K8sSecretNamespace: "default",
+		K8sSecretKey:       "api-token",
 	}
 }
 
-// GetLogLevel returns the slog.Level corresponding to the configured LogLevel
+// GetLogLevel returns the slog.Level for the configured LogLevel.
 func (c *ClientConfig) GetLogLevel() slog.Level {
 	switch strings.ToLower(string(c.LogLevel)) {
 	case string(LogLevelDebug):
 		return slog.LevelDebug
-	case string(LogLevelInfo):
-		return slog.LevelInfo
 	case string(LogLevelWarn):
 		return slog.LevelWarn
 	case string(LogLevelError):
@@ -67,24 +75,28 @@ func (c *ClientConfig) GetLogLevel() slog.Level {
 	}
 }
 
-// LoadFromFile loads configuration from a YAML file
+// LoadFromFile reads a client config file. The file must exist, since it
+// is only loaded when a path is given, and unknown keys are errors.
 func (c *ClientConfig) LoadFromFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // File doesn't exist is not an error
-		}
-		return fmt.Errorf("failed to read config file: %w", err)
+		return fmt.Errorf("read client config file: %w", err)
 	}
-
-	if err := yaml.Unmarshal(data, c); err != nil {
-		return fmt.Errorf("failed to parse config file: %w", err)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("parse client config file %s: %w", path, err)
 	}
-
+	// KnownFields checks only the document decoded, so a second one would
+	// be ignored unchecked.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("parse client config file %s: it must hold a single YAML document", path)
+	}
 	return nil
 }
 
-// LoadFromEnv overrides configuration values from environment variables
+// LoadFromEnv overrides values from environment variables that are set.
 func (c *ClientConfig) LoadFromEnv() error {
 	val := reflect.ValueOf(c).Elem()
 	typ := val.Type()
@@ -95,57 +107,62 @@ func (c *ClientConfig) LoadFromEnv() error {
 		if envTag == "" {
 			continue
 		}
-
-		if envVal := os.Getenv(envTag); envVal != "" {
-			// Special handling for timeout
-			if field.Type == reflect.TypeOf(time.Duration(0)) {
-				duration, err := time.ParseDuration(envVal)
-				if err != nil {
-					return fmt.Errorf("invalid timeout value: %w", err)
-				}
-				val.Field(i).Set(reflect.ValueOf(duration))
-			} else if field.Type.Kind() == reflect.Bool {
-				val.Field(i).SetBool(envVal == "true" || envVal == "1")
-			} else {
-				// Only skip env override if ConfigPath was explicitly set by a flag
-				if field.Name == "ConfigPath" && c.ConfigPathSet {
-					continue // Skip if already set by flag
-				}
-				val.Field(i).SetString(envVal)
-			}
+		envVal := os.Getenv(envTag)
+		if envVal == "" {
+			continue
 		}
+		if field.Type == reflect.TypeOf(time.Duration(0)) {
+			duration, err := time.ParseDuration(envVal)
+			if err != nil {
+				return fmt.Errorf("invalid %s value: %w", envTag, err)
+			}
+			val.Field(i).Set(reflect.ValueOf(duration))
+			continue
+		}
+		val.Field(i).SetString(envVal)
 	}
-
 	return nil
 }
 
-// Validate checks if the configuration is valid for the given command
+// commandsNeedingAPIAuth authenticate with a token or a username and password.
+var commandsNeedingAPIAuth = map[string]bool{
+	"configure":     true,
+	"cluster-state": true,
+	"export":        true,
+}
+
+// Validate checks that the configuration has what the command needs.
 func (c *ClientConfig) Validate(command string) error {
 	if c.APIURL == "" {
-		return fmt.Errorf("API URL is required (set DNS_API_URL or api_url in config)")
+		return errors.New("API URL is required (set DNS_API_URL or api_url)")
+	}
+	if c.Timeout <= 0 {
+		return errors.New("timeout must be greater than 0")
+	}
+	if c.WaitTimeout < 0 {
+		return errors.New("wait timeout must not be negative")
+	}
+	switch strings.ToLower(string(c.LogLevel)) {
+	case "", string(LogLevelDebug), string(LogLevelInfo), string(LogLevelWarn), string(LogLevelError):
+	default:
+		return fmt.Errorf("log level %q must be debug, info, warn or error", c.LogLevel)
 	}
 
-	if c.Timeout <= 0 {
-		return fmt.Errorf("timeout must be greater than 0")
+	if commandsNeedingAPIAuth[command] && c.APIToken == "" && (c.Username == "" || c.Password == "") {
+		return fmt.Errorf("%s needs an API token (DNS_API_TOKEN) or a username and password (DNS_USERNAME, DNS_PASSWORD)", command)
 	}
 
 	switch command {
-	case "configure":
-		if c.APIToken == "" && (c.Username == "" || c.Password == "") {
-			return fmt.Errorf("either API token (DNS_API_TOKEN) or username/password (DNS_USERNAME/DNS_PASSWORD) is required for configure command")
-		}
 	case "create-token", "change-password":
 		if c.Username == "" || c.Password == "" {
-			return fmt.Errorf("username and password are required (set DNS_USERNAME/DNS_PASSWORD or username/password in config)")
+			return errors.New("username and password are required (set DNS_USERNAME and DNS_PASSWORD)")
 		}
 		if command == "change-password" && c.NewPassword == "" {
-			return fmt.Errorf("new password is required (set DNS_NEW_PASSWORD or new_password in config)")
+			return errors.New("new password is required (set DNS_NEW_PASSWORD)")
 		}
-	case "cluster-state":
-		if c.APIToken == "" && (c.Username == "" || c.Password == "") {
-			return fmt.Errorf("either API token (DNS_API_TOKEN) or username/password (DNS_USERNAME/DNS_PASSWORD) is required")
+		if command == "create-token" && c.TokenPath == "" && c.K8sSecretName == "" {
+			return errors.New("a token destination is required (set DNS_TOKEN_PATH and/or DNS_K8S_SECRET_NAME)")
 		}
 	}
-
 	return nil
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -93,11 +95,16 @@ type RecordMeta struct {
 }
 
 type AddRecordRequest struct {
-	Domain     string     `json:"domain" yaml:"domain"`                         // (required)
-	Type       RecordType `json:"type" yaml:"type"`                             // (required)
-	Zone       *string    `json:"zone,omitempty" yaml:"zone,omitempty"`         // optional authoritative zone
-	RecordMeta            // TTL / comments / expiry
-	Overwrite  *bool      `json:"overwrite,omitempty" yaml:"overwrite,omitempty"`
+	Domain     string     `json:"domain" yaml:"domain"`                 // (required)
+	Type       RecordType `json:"type" yaml:"type"`                     // (required)
+	Zone       *string    `json:"zone,omitempty" yaml:"zone,omitempty"` // optional authoritative zone
+	RecordMeta `yaml:",inline"`
+	// RecordPolicy overrides the zone's and the file's record policy for
+	// this name and type: "merge" or "replace".
+	RecordPolicy *string `json:"-" yaml:"recordPolicy,omitempty"`
+	// Overwrite is the API parameter the replace policy sets; it is not part
+	// of the YAML schema.
+	Overwrite *bool `json:"overwrite,omitempty" yaml:"-"`
 
 	/* ---------- Generic to A / AAAA --------- */
 	IPAddress       string `json:"ipAddress,omitempty" yaml:"ipAddress,omitempty"`
@@ -120,10 +127,15 @@ type AddRecordRequest struct {
 	Preference *int   `json:"preference,omitempty" yaml:"preference,omitempty"`
 
 	/* ---------- TXT / RP ---------- */
-	Text      string `json:"text,omitempty" yaml:"text,omitempty"`
-	SplitText *bool  `json:"splitText,omitempty" yaml:"splitText,omitempty"`
-	Mailbox   string `json:"mailbox,omitempty" yaml:"mailbox,omitempty"`
-	TxtDomain string `json:"txtDomain,omitempty" yaml:"txtDomain,omitempty"`
+	// Text is a pointer so that an explicit "" (an empty TXT record) is
+	// told apart from a missing value.
+	Text      *string `json:"text,omitempty" yaml:"text,omitempty"`
+	SplitText *bool   `json:"splitText,omitempty" yaml:"splitText,omitempty"`
+	// CharacterStringsBase64 sets TXT character strings byte for byte,
+	// instead of text.
+	CharacterStringsBase64 []string `json:"characterStringsBase64,omitempty" yaml:"characterStringsBase64,omitempty"`
+	Mailbox                string   `json:"mailbox,omitempty" yaml:"mailbox,omitempty"`
+	TxtDomain              string   `json:"txtDomain,omitempty" yaml:"txtDomain,omitempty"`
 
 	/* ---------- SRV ---------- */
 	Priority *int   `json:"priority,omitempty" yaml:"priority,omitempty"`
@@ -193,43 +205,92 @@ type AddRecordRequest struct {
 	RData string `json:"rdata,omitempty" yaml:"rdata,omitempty"`
 }
 
+// recordYAMLKeys is every key a record entry may use: the struct's yaml
+// fields plus the "name" alias. "value" is already a field (CAA).
+var recordYAMLKeys = func() map[string]bool {
+	keys := yamlFieldNames(reflect.TypeOf(AddRecordRequest{}))
+	keys["name"] = true
+	return keys
+}()
+
 // UnmarshalYAML supports "name" as an alias for "domain" and "value" as an
-// alias for "ipAddress" (for A/AAAA records) so configs can use the more
-// intuitive field names.
+// alias for "ipAddress" on A/AAAA records. A custom unmarshaler bypasses the
+// decoder's KnownFields check, so unknown keys are rejected here.
 func (r *AddRecordRequest) UnmarshalYAML(node *yaml.Node) error {
-	type raw AddRecordRequest
-	var tmp raw
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: record must be a mapping", node.Line)
+	}
+	present := make(map[string]bool, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Value == "overwrite" {
+			return fmt.Errorf("line %d: overwrite was replaced by recordPolicy: replace", key.Line)
+		}
+		if !recordYAMLKeys[key.Value] {
+			return fmt.Errorf("line %d: unknown record field %q", key.Line, key.Value)
+		}
+		present[key.Value] = true
+	}
+
+	type plain AddRecordRequest
+	var tmp plain
 	if err := node.Decode(&tmp); err != nil {
 		return err
 	}
 	*r = AddRecordRequest(tmp)
 
-	// Decode again into a map to pick up alias fields
-	var m map[string]interface{}
-	if err := node.Decode(&m); err != nil {
-		return err
-	}
-
-	if r.Domain == "" {
-		if name, ok := m["name"].(string); ok {
-			r.Domain = name
+	if present["name"] {
+		if present["domain"] {
+			return fmt.Errorf("line %d: record sets both domain and its alias name", node.Line)
 		}
-	}
-	if r.IPAddress == "" {
-		if val, ok := m["value"].(string); ok && (r.Type == RT_A || r.Type == RT_AAAA) {
-			r.IPAddress = val
+		var alias struct {
+			Name string `yaml:"name"`
 		}
+		if err := node.Decode(&alias); err != nil {
+			return err
+		}
+		r.Domain = alias.Name
 	}
-
+	if (r.Type == RT_A || r.Type == RT_AAAA) && present["value"] {
+		if present["ipAddress"] {
+			return fmt.Errorf("line %d: %s record sets both ipAddress and its alias value", node.Line, r.Type)
+		}
+		r.IPAddress, r.Value = r.Value, ""
+	}
 	return nil
 }
 
+// yamlFieldNames returns the yaml keys of a struct type, following inline fields.
+func yamlFieldNames(t reflect.Type) map[string]bool {
+	keys := map[string]bool{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		name, opts, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		if name == "-" {
+			continue
+		}
+		if strings.Contains(opts, "inline") {
+			for k := range yamlFieldNames(f.Type) {
+				keys[k] = true
+			}
+			continue
+		}
+		if name == "" {
+			name = strings.ToLower(f.Name)
+		}
+		keys[name] = true
+	}
+	return keys
+}
+
+// ZoneSummary is an entry of /api/zones/list and of record API responses.
 type ZoneSummary struct {
 	Name         string   `json:"name" yaml:"name"`
 	Type         ZoneType `json:"type" yaml:"type"`
 	Internal     bool     `json:"internal" yaml:"internal"`
 	DnssecStatus string   `json:"dnssecStatus" yaml:"dnssecStatus"`
 	Disabled     bool     `json:"disabled" yaml:"disabled"`
+	Catalog      string   `json:"catalog" yaml:"catalog"`
 }
 
 type AddedRecord struct {
@@ -248,16 +309,79 @@ type AddRecordResponse struct {
 }
 
 func (c *Client) AddRecord(ctx context.Context, req AddRecordRequest) (*AddRecordResponse, error) {
-	r, err := c.callPOSTForm(ctx, "/api/zones/records/add", req)
+	const path = "/api/zones/records/add"
+	form, err := jsonToFormValues(req)
 	if err != nil {
 		return nil, fmt.Errorf("add record %q (%s): %w", req.Domain, req.Type, err)
 	}
-	return unmarshalResp[AddRecordResponse](r)
+	form.Set("type", req.Type.APIValue())
+	if req.Type.Canonical() == RT_TXT && len(req.characterStrings()) == 0 {
+		// The server rejects an empty text parameter; an empty
+		// characterStringsBase64 is how it takes a TXT record without
+		// character strings.
+		form.Del("text")
+		form.Set("characterStringsBase64", "")
+	}
+	if typ := req.Type.Canonical(); (typ == RT_SVCB || typ == RT_HTTPS) && req.SvcParams == "" {
+		// The server requires svcParams; "false" means none.
+		form.Set("svcParams", "false")
+	}
+	raw, err := c.postForm(ctx, path, form)
+	if err != nil {
+		return nil, fmt.Errorf("add record %q (%s): %w", req.Domain, req.Type, err)
+	}
+	return decodeResponse[AddRecordResponse](path, raw)
 }
 
-const (
-	rfc3339NoZone = "2006-01-02T15:04:05" // no "Z±hh:mm"
-)
+// RecordEntry is one record from /api/zones/records/get.
+type RecordEntry struct {
+	Name      string                     `json:"name"`
+	Type      RecordType                 `json:"type"`
+	TTL       int                        `json:"ttl"`
+	Disabled  bool                       `json:"disabled"`
+	Comments  string                     `json:"comments"`
+	ExpiryTTL int                        `json:"expiryTtl"`
+	RData     map[string]json.RawMessage `json:"rData"`
+	// GlueRecords are an NS record's glue addresses.
+	GlueRecords []string `json:"glueRecords"`
+}
+
+// ListZoneRecords returns every record in zone.
+func (c *Client) ListZoneRecords(ctx context.Context, zone string) ([]RecordEntry, error) {
+	const path = "/api/zones/records/get"
+	raw, err := c.get(ctx, path, url.Values{"domain": {zone}, "zone": {zone}, "listZone": {"true"}})
+	if err != nil {
+		return nil, fmt.Errorf("list records of zone %q: %w", zone, err)
+	}
+	resp, err := decodeResponse[struct {
+		Records []RecordEntry `json:"records"`
+	}](path, raw)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Records, nil
+}
+
+// GetRecords returns the records at domain. zone selects the authoritative
+// zone when domain could belong to more than one.
+func (c *Client) GetRecords(ctx context.Context, domain, zone string) ([]RecordEntry, error) {
+	const path = "/api/zones/records/get"
+	params := url.Values{"domain": {domain}}
+	if zone != "" {
+		params.Set("zone", zone)
+	}
+	raw, err := c.get(ctx, path, params)
+	if err != nil {
+		return nil, fmt.Errorf("get records %q: %w", domain, err)
+	}
+	resp, err := decodeResponse[struct {
+		Records []RecordEntry `json:"records"`
+	}](path, raw)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Records, nil
+}
 
 type FuzzyTime struct{ time.Time }
 

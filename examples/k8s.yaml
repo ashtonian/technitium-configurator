@@ -1,17 +1,20 @@
 ---
 apiVersion: v1
 kind: ConfigMap
+# The DNS config below contains a TSIG secret. In production, store a config
+# with secrets (TSIG keys, user passwords, app credentials) in a Secret and
+# mount that instead.
 metadata:
   name: technitium-config
 data:
   config.yaml: |-
-    # Optional: cluster configuration (applied after DNS settings).
-    # DNS settings are applied first so TSIG keys are set cleanly
-    # before cluster init adds its own internal keys.
-    # Only the primary needs dnsSettings/zones/records below — they
-    # replicate to secondary nodes. Secondary config is cluster-only.
+    # Optional: cluster configuration (applied after DNS settings, so the
+    # cluster's own TSIG key is added on top of yours). On a cluster primary,
+    # zones join the cluster catalog by default and replicate to secondaries.
+    # Secondary config is cluster-only.
     #
-    # Primary:
+    # Primary (also set dnsServerDomain below to a name inside the cluster
+    # domain, for example "dns.dns-cluster.example.com"):
     # cluster:
     #   mode: "primary"
     #   domain: "dns-cluster.example.com"
@@ -23,11 +26,11 @@ data:
     # cluster:
     #   mode: "secondary"
     #   nodeIPs: "10.0.0.2"
-    #   primaryURL: "https://primary-dns.example.com:5380"
+    #   primaryURL: "https://primary-dns.example.com:53443"
     #   primaryIP: "10.0.0.1"
     #   primaryUsername: "admin"
     #   primaryPassword: "password"
-    #   primaryTotp: ""
+    #   primaryTotp: ""          # join only; later runs need a primary user without 2FA
     #   ignoreCertErrors: false
     dnsSettings:
       dnsServerDomain: "technitium.somedomain.com"
@@ -37,8 +40,6 @@ data:
       useLocalTime: true
       maxLogFileDays: 7
       maxStatFileDays: 365
-      qpmLimitRequests: 0
-      qpmLimitErrors: 0
       enableDnsOverUdpProxy:  true
       enableDnsOverTcpProxy:  true
       enableDnsOverHttp:      true
@@ -59,7 +60,7 @@ data:
       tsigKeys:
       - keyName: "external-dns"
         algorithmName: "hmac-sha256"
-        sharedSecret: "somesecret"
+        sharedSecret: "cmVwbGFjZS13aXRoLWEtcmFuZG9tLWJhc2U2NC1zZWNyZXQ="   # base64; generate with: openssl rand -base64 32
     zones:
       - zone:  "somedomain.com"
         type:  "Forwarder"
@@ -75,9 +76,8 @@ data:
           update: "UseSpecifiedNetworkACL"
           updateNetworkACL:
             - "172.0.0.0/8"
-          updateSecurityPolicies: >
-            external-dns|*.somedomain.com|ANY
-            |external-dns|somedomain.com|ANY
+          # tsigKeyName|domain|allowed types, repeated for each policy
+          updateSecurityPolicies: "external-dns|*.somedomain.com|ANY|external-dns|somedomain.com|ANY"
       - zone:  "someotherdomain.com"
         type:  "Forwarder"
         initializeForwarder: true
@@ -87,7 +87,7 @@ data:
     records: [ ]
     apps:
       - name: "Advanced Blocking"
-        url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v8.zip"
+        url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v11.2.1.zip"
         config:
           enableBlocking: true
           blockListUrlUpdateIntervalHours: 24
@@ -116,7 +116,7 @@ data:
                 - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nosafesearch-onlydomains.txt"
                 - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/dyndns-onlydomains.txt"
       - name: "Advanced Forwarding"
-        url:  "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v3.1.zip"
+        url:  "https://download.technitium.com/dns/apps/AdvancedForwardingApp-v5.2.zip"
         config:
           enableForwarding: true
           forwarders:
@@ -177,13 +177,37 @@ spec:
   template:
     spec:
       serviceAccountName: technitium-configur
+      # change-password runs first: create-token logs in with the new password.
+      # Both are safe to re-run.
       initContainers:
+      - name: change-password
+        image: ashtonian/technitium-configurator:3.0.0
+        args:
+          - change-password
+        env:
+          - name: DNS_API_URL
+            value: http://172.0.0.2:5380
+          - name: DNS_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: technitium-credentials
+                key: username
+          - name: DNS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: technitium-credentials
+                key: password
+          - name: DNS_NEW_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: technitium-credentials
+                key: new_password
       - name: create-token
-        image: ashtonian/technitium-configurator:1.25
+        image: ashtonian/technitium-configurator:3.0.0
         args: ["create-token"]
         env:
           - name: DNS_API_URL
-            value: http://172.0.0.2
+            value: http://172.0.0.2:5380
           - name: DNS_USERNAME
             valueFrom:
               secretKeyRef:
@@ -202,37 +226,15 @@ spec:
                 fieldPath: metadata.namespace
           - name: DNS_K8S_SECRET_KEY
             value: api-token
-      - name: change-password
-        image: ashtonian/technitium-configurator:1.25
-        args:
-          - change-password
-        env:
-          - name: DNS_API_URL
-            value: http://172.0.0.2
-          - name: DNS_USERNAME
-            valueFrom:
-              secretKeyRef:
-                name: technitium-credentials
-                key: username
-          - name: DNS_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: technitium-credentials
-                key: password
-          - name: DNS_NEW_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: technitium-credentials
-                key: new_password
       containers:
       - name: technitium-configurator
-        image: ashtonian/technitium-configurator:1.25
+        image: ashtonian/technitium-configurator:3.0.0
         args:
           - configure
           - /app/config.yaml
         env:
           - name: DNS_API_URL
-            value: http://172.0.0.2
+            value: http://172.0.0.2:5380
           - name: DNS_USERNAME
             valueFrom:
               secretKeyRef:
@@ -258,9 +260,16 @@ kind: Role
 metadata:
   name: technitium-configur
 rules:
+# create-token reads and updates only the token Secret. Kubernetes cannot
+# scope "create" to a name, so it gets a separate rule; drop it if you
+# pre-create the Secret.
 - apiGroups: [""]
-  resources: ["configmaps", "secrets"]
-  verbs: ["get", "list", "watch", "create", "update", "patch"]
+  resources: ["secrets"]
+  resourceNames: ["technitium-api-token"]
+  verbs: ["get", "update"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
