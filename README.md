@@ -447,7 +447,7 @@ go test -tags e2e ./e2e              # needs Docker; starts Technitium 15.6.1 co
 
 The e2e suite checks the values a fresh install ends up with; that an unchanged re-run writes nothing but settings and zone options; record policies and values the server stores in another form; PTR preservation; IDN names; ACL clearing; administration; export applied back to its server and restored onto a fresh one; failure exit codes; and a two-node cluster in which zones replicate, a local zone stays local, and the secondary re-runs with its original credentials and with a token it no longer has.
 
-GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on every pull request and push. Only when they pass does it build both platforms' binaries, check each one's architecture and version, and then build and push the images from the same inputs. Pushes to `main` publish `beta` and `beta-<date>-<sha>`. A `v*` tag publishes `<version>` and `v<version>`, moves `latest` only for versions without a prerelease suffix, marks tags with a suffix as prereleases, and creates a GitHub release from that version's section of `RELEASE_NOTES.md`.
+GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on every pull request and push. Only when they pass does it build both platforms' binaries, check each one's architecture and version, and then build and push the images from the same inputs. Pushes to `main` publish `beta` and `beta-<date>-<sha>`. A `v*` tag publishes `<version>` (and `v<version>` for versions without a prerelease suffix), moves `latest` only for those, marks tags with a suffix as prereleases, and creates a GitHub release from that version's section of `RELEASE_NOTES.md`.
 
 ## Operations
 
@@ -515,3 +515,5 @@ GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on 
 | `pkg/kube` | Kubernetes Secret storage for `create-token` |
 | `e2e/` | End-to-end tests against Technitium containers |
 | `examples/` | DNS config, Docker Compose and Kubernetes examples |
+| `.github/workflows/` | CI: test, e2e, image build and release (`docker.yml`); Docker Hub overview publishing (`dockerhub-description.yml`) |
+| `.github/DOCKERHUB.md` | The Docker Hub overview; changes are published when they reach `main` |

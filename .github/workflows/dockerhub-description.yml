@@ -1,0 +1,31 @@
+name: Docker Hub description
+
+# Publishes .github/DOCKERHUB.md as the Docker Hub overview. The README is
+# too long for Docker Hub's 25,000-byte limit and uses relative links.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - .github/DOCKERHUB.md
+      - .github/workflows/dockerhub-description.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # The token needs read, write and delete scope to edit the description.
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          short-description: "Declarative YAML bootstrap for Technitium DNS Server: settings, zones, records, apps, clusters"
+          readme-filepath: ./.github/DOCKERHUB.md
