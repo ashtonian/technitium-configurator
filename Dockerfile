@@ -3,6 +3,8 @@
 # Build stage
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
+ARG TARGETARCH
+
 WORKDIR /app
 
 # Install git and build dependencies
