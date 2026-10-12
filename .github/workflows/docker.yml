@@ -105,6 +105,8 @@ jobs:
             # Beta tags (on main branch push or manual dispatch)
             type=raw,value=beta,enable={{is_default_branch}}
             type=raw,value=beta-{{date 'YYYYMMDD'}}-{{sha}},enable={{is_default_branch}}
+            # Pull requests (built, never pushed): gives the binary a version
+            type=ref,event=pr
 
       # The arm64 image once shipped an x86-64 binary (#4). Build each
       # platform's binary with the publishing step's inputs and check its
@@ -135,7 +137,8 @@ jobs:
             esac
             file "$bin" | tee /dev/stderr | grep -q "$want"
             # arm64 runs under the QEMU emulator set up above.
-            "$bin" version | tee /dev/stderr | grep -qF "technitium-configurator $VERSION "
+            # The Dockerfile falls back to "dev" when no version is given.
+            "$bin" version | tee /dev/stderr | grep -qF "technitium-configurator ${VERSION:-dev} "
           done
 
       - name: Build and push

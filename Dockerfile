@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     test -n "$TARGETOS" && test -n "$TARGETARCH" && \
     GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
     go build -mod=readonly -trimpath -buildvcs=false \
-      -ldflags="-s -w -buildid= -X main.version=${VERSION} -X main.commit=${REVISION} -X main.buildDate=${BUILD_DATE}" \
+      -ldflags="-s -w -buildid= -X main.version=${VERSION:-dev} -X main.commit=${REVISION:-unknown} -X main.buildDate=${BUILD_DATE:-unknown}" \
       -o /out/technitium-configurator .
 
 FROM scratch
