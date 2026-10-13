@@ -181,7 +181,7 @@ spec:
       # Both are safe to re-run.
       initContainers:
       - name: change-password
-        image: ashtonian/technitium-configurator:3.0.0
+        image: ashtonian/technitium-configurator:3.0.1
         args:
           - change-password
         env:
@@ -203,7 +203,7 @@ spec:
                 name: technitium-credentials
                 key: new_password
       - name: create-token
-        image: ashtonian/technitium-configurator:3.0.0
+        image: ashtonian/technitium-configurator:3.0.1
         args: ["create-token"]
         env:
           - name: DNS_API_URL
@@ -228,7 +228,7 @@ spec:
             value: api-token
       containers:
       - name: technitium-configurator
-        image: ashtonian/technitium-configurator:3.0.0
+        image: ashtonian/technitium-configurator:3.0.1
         args:
           - configure
           - /app/config.yaml

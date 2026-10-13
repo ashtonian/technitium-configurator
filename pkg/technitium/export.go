@@ -327,14 +327,20 @@ func exportApps(ctx context.Context, c *Client, cfg *Config) ([]string, error) {
 	if len(installed) == 0 {
 		return nil, nil
 	}
-	store := map[string]storeApp{}
 	var notes []string
-	if apps, err := c.listStoreApps(ctx); err != nil {
-		notes = append(notes, "The App Store could not be read, so app urls are empty: "+err.Error())
-	} else {
-		for _, a := range apps {
-			store[a.Name] = a
+	// Without the store's list, whether an app is in the store is unknown,
+	// so one note covers every app instead of claiming each is absent.
+	storeApps, storeErr := c.listStoreApps(ctx)
+	if storeErr != nil {
+		names := make([]string, len(installed))
+		for i, app := range installed {
+			names[i] = app.Name
 		}
+		notes = append(notes, fmt.Sprintf("The App Store could not be read (%v), so no app has a url; add one to each of %s to install it on another server.", storeErr, strings.Join(names, ", ")))
+	}
+	store := make(map[string]storeApp, len(storeApps))
+	for _, a := range storeApps {
+		store[a.Name] = a
 	}
 	for _, app := range installed {
 		ac := AppConfig{Name: app.Name}
@@ -343,7 +349,7 @@ func exportApps(ctx context.Context, c *Client, cfg *Config) ([]string, error) {
 			if s.Version != app.Version {
 				notes = append(notes, fmt.Sprintf("App %s: v%s is installed; the url is the store's current v%s.", app.Name, app.Version, s.Version))
 			}
-		} else {
+		} else if storeErr == nil {
 			notes = append(notes, fmt.Sprintf("App %s is not in the App Store, so it has no url; add one to install it on another server.", app.Name))
 		}
 		config, err := c.GetAppConfig(ctx, app.Name)

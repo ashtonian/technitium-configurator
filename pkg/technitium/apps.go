@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/big"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -39,8 +40,7 @@ func (a *AppConfig) ConfigJSON() (config string, ok bool, err error) {
 		return "", false, nil
 	}
 	var buf bytes.Buffer
-	w := &yamlWalk{expanding: map[*yaml.Node]bool{}, budget: maxYAMLValues}
-	if err := w.toJSON(n, &buf); err != nil {
+	if err := newYAMLWalk(maxYAMLValues).toJSON(n, &buf); err != nil {
 		return "", false, fmt.Errorf("config of app %q: %w", a.Name, err)
 	}
 	return buf.String(), true, nil
@@ -55,13 +55,26 @@ const maxYAMLValues = 1 << 20
 // alias expansion are errors. Integers are written in decimal from their
 // text and floats keep their digits, so nothing passes through a float64.
 type yamlWalk struct {
-	expanding map[*yaml.Node]bool // alias targets being written
-	budget    int
+	expanding map[*yaml.Node]bool           // alias targets being written
+	flat      map[*yaml.Node][]mappingEntry // mappings with merges resolved
+	budget    int                           // values and merge entries left to visit
+}
+
+func newYAMLWalk(budget int) *yamlWalk {
+	return &yamlWalk{expanding: map[*yaml.Node]bool{}, flat: map[*yaml.Node][]mappingEntry{}, budget: budget}
+}
+
+// spend charges n units of work against the expansion budget.
+func (w *yamlWalk) spend(n int) error {
+	if w.budget -= n; w.budget < 0 {
+		return errors.New("the config expands to too many values through aliases")
+	}
+	return nil
 }
 
 func (w *yamlWalk) toJSON(n *yaml.Node, buf *bytes.Buffer) error {
-	if w.budget--; w.budget < 0 {
-		return errors.New("the config expands to too many values through aliases")
+	if err := w.spend(1); err != nil {
+		return err
 	}
 	switch n.Kind {
 	case yaml.DocumentNode:
@@ -126,15 +139,27 @@ type mappingEntry struct{ key, value *yaml.Node }
 // mappingEntries lists a mapping's keys with merge keys resolved: the
 // mapping's own keys come first and win, then keys merged from "<<" in
 // order, where an earlier source wins over a later one. A key the mapping
-// defines twice is an error.
+// defines twice, "<<" included, is an error. Each mapping is resolved once
+// and every entry visited is charged to the budget, so merges that reuse
+// the same mappings cannot grow without limit.
 func (w *yamlWalk) mappingEntries(n *yaml.Node) ([]mappingEntry, error) {
+	if entries, done := w.flat[n]; done {
+		return entries, w.spend(len(entries))
+	}
+	if err := w.spend(len(n.Content) / 2); err != nil {
+		return nil, err
+	}
 	var out []mappingEntry
-	var merges []*yaml.Node
+	var merge *yaml.Node
+	mergeLine := 0
 	own := map[string]int{}
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		k, v := n.Content[i], n.Content[i+1]
 		if k.Kind == yaml.ScalarNode && k.ShortTag() == "!!merge" {
-			merges = append(merges, v)
+			if merge != nil {
+				return nil, fmt.Errorf("line %d: key \"<<\" is already defined at line %d; merge several mappings with <<: [*a, *b]", k.Line, mergeLine)
+			}
+			merge, mergeLine = v, k.Line
 			continue
 		}
 		if k.Kind != yaml.ScalarNode {
@@ -150,11 +175,11 @@ func (w *yamlWalk) mappingEntries(n *yaml.Node) ([]mappingEntry, error) {
 	for key := range own {
 		seen[key] = true
 	}
-	var merge func(src *yaml.Node) error
-	merge = func(src *yaml.Node) error {
+	var mergeFrom func(src *yaml.Node) error
+	mergeFrom = func(src *yaml.Node) error {
 		switch src.Kind {
 		case yaml.AliasNode:
-			return w.expand(src, merge)
+			return w.expand(src, mergeFrom)
 		case yaml.MappingNode:
 			entries, err := w.mappingEntries(src)
 			if err != nil {
@@ -171,17 +196,18 @@ func (w *yamlWalk) mappingEntries(n *yaml.Node) ([]mappingEntry, error) {
 			return fmt.Errorf("line %d: a merge key needs a mapping or a list of mappings", src.Line)
 		}
 	}
-	for _, m := range merges {
-		sources := []*yaml.Node{m}
-		if resolved := resolveAlias(m); resolved.Kind == yaml.SequenceNode {
+	if merge != nil {
+		sources := []*yaml.Node{merge}
+		if resolved := resolveAlias(merge); resolved.Kind == yaml.SequenceNode {
 			sources = resolved.Content
 		}
 		for _, src := range sources {
-			if err := merge(src); err != nil {
+			if err := mergeFrom(src); err != nil {
 				return nil, err
 			}
 		}
 	}
+	w.flat[n] = out
 	return out, nil
 }
 
@@ -192,8 +218,26 @@ func resolveAlias(n *yaml.Node) *yaml.Node {
 	return n
 }
 
+// plainNumber matches the YAML number syntax a plain scalar falls back to
+// !!str for when its value overflows float64 or int64, such as 1e400.
+var (
+	plainFloat = regexp.MustCompile(`^[-+]?(\.[0-9][0-9_]*|[0-9][0-9_]*(\.[0-9_]*)?)([eE][-+]?[0-9]+)?$`)
+	plainInt   = regexp.MustCompile(`^[-+]?(0x[0-9a-fA-F_]+|0o[0-7_]+|0b[01_]+)$`)
+)
+
 func scalarToJSON(n *yaml.Node, buf *bytes.Buffer) error {
-	switch n.ShortTag() {
+	tag := n.ShortTag()
+	// An untagged, unquoted number outside float64 or int64 range resolves
+	// to a string; it was written as a number, so keep it one.
+	if tag == "!!str" && n.Style == 0 {
+		switch {
+		case plainInt.MatchString(n.Value):
+			tag = "!!int"
+		case plainFloat.MatchString(n.Value):
+			tag = "!!float"
+		}
+	}
+	switch tag {
 	case "!!null":
 		buf.WriteString("null")
 	case "!!bool":
@@ -203,7 +247,7 @@ func scalarToJSON(n *yaml.Node, buf *bytes.Buffer) error {
 		}
 		buf.WriteString(strconv.FormatBool(b))
 	case "!!int":
-		i, ok := new(big.Int).SetString(strings.ReplaceAll(n.Value, "_", ""), 0)
+		i, ok := new(big.Int).SetString(strings.TrimPrefix(strings.ReplaceAll(n.Value, "_", ""), "+"), 0)
 		if !ok {
 			return fmt.Errorf("line %d: %q is not an integer", n.Line, n.Value)
 		}

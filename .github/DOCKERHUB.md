@@ -11,7 +11,7 @@ Source, full documentation and examples: **[github.com/ashtonian/technitium-conf
 | Tag | What it is |
 |---|---|
 | `latest` | The newest stable release |
-| `X.Y.Z`, `vX.Y.Z` | A release, for example `3.0.0` |
+| `X.Y.Z`, `vX.Y.Z` | A release, for example `3.0.1` |
 | `X.Y.Z-rc.N` | Release candidates; `latest` never points to one |
 | `beta`, `beta-<date>-<sha>` | Builds of the `main` branch |
 
@@ -21,12 +21,12 @@ Images are published for `linux/amd64` and `linux/arm64`, with build provenance 
 
 - **Bootstrap, then re-run safely.** Zones, records, apps, groups and users are created when absent. Settings and zone options are applied on every run. Nothing is pruned.
 - **Every v15.6 server setting**, with explicit `false`, `0`, `""` and `[]` applied.
-- **Zones and records.** All zone types with ACLs, update policies and catalog membership. A record policy chooses between adding values (`merge`) and making the file own a name's records (`replace`).
+- **Zones and records.** All zone types with ACLs, update policies and catalog membership. A record policy chooses between adding values (`merge`) and making the file own the values of each name and type it declares (`replace`).
 - **Any DNS App.** Install from a package URL and pass its config through as JSON.
 - **Clusters.** Initialize a primary or join a secondary; zones on the primary replicate through the cluster catalog.
 - **Users, groups and permissions**, created if absent and merged into the existing grants.
 - **Export** a running server as a config file you can edit and apply again.
-- **Strict.** Unknown keys and invalid values fail before anything changes; real failures exit non-zero.
+- **Strict.** Unknown keys and invalid values in the files fail before anything changes; problems only the server can find fail that item, and every failure makes the run exit non-zero.
 
 ## Quick start
 
@@ -38,7 +38,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="admin" \
   -e DNS_NEW_PASSWORD="new-secure-password" \
-  ashtonian/technitium-configurator:3.0.0 change-password
+  ashtonian/technitium-configurator:3.0.1 change-password
 ```
 
 Write a DNS config:
@@ -65,7 +65,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="new-secure-password" \
   -v "$(pwd)/dns:/app/dns:ro" \
-  ashtonian/technitium-configurator:3.0.0 configure /app/dns
+  ashtonian/technitium-configurator:3.0.1 configure /app/dns
 ```
 
 Export a running server:
@@ -75,7 +75,7 @@ docker run --rm \
   -e DNS_API_URL="http://dns-server:5380" \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="new-secure-password" \
-  ashtonian/technitium-configurator:3.0.0 export > dns.yaml
+  ashtonian/technitium-configurator:3.0.1 export > dns.yaml
 ```
 
 Create an API token and save it to a file (mount a directory the image's user can write to) or to a Kubernetes Secret:
@@ -88,7 +88,7 @@ docker run --rm \
   -e DNS_PASSWORD="new-secure-password" \
   -e DNS_TOKEN_PATH="/app/tokens/token.yaml" \
   -v "$(pwd)/tokens:/app/tokens" \
-  ashtonian/technitium-configurator:3.0.0 create-token
+  ashtonian/technitium-configurator:3.0.1 create-token
 ```
 
 ## Docker Compose
@@ -114,7 +114,7 @@ services:
       retries: 6
 
   configurator-password:
-    image: ashtonian/technitium-configurator:3.0.0
+    image: ashtonian/technitium-configurator:3.0.1
     environment:
       - DNS_API_URL=http://dns:5380
       - DNS_USERNAME=admin
@@ -126,7 +126,7 @@ services:
     command: change-password
 
   configurator-configure:
-    image: ashtonian/technitium-configurator:3.0.0
+    image: ashtonian/technitium-configurator:3.0.1
     environment:
       - DNS_API_URL=http://dns:5380
       - DNS_USERNAME=admin
@@ -176,6 +176,6 @@ All options, the DNS config schema and troubleshooting are in the [full document
 - Built `FROM scratch`: a static binary at `/technitium-configurator` and a CA bundle, nothing else.
 - Runs as user `65532`; the working directory is `/app`, so a relative `config.yaml` resolves to `/app/config.yaml`.
 - Logs go to stderr; stdout carries only command output, such as `export`'s YAML.
-- Exit codes: `0` success, `1` failure (every failure is listed), `2` bad command-line usage.
+- Exit codes: `0` success or help, `1` failure (every failure is listed), `2` bad command-line usage.
 
 Issues and feature requests: [github.com/ashtonian/technitium-configurator/issues](https://github.com/ashtonian/technitium-configurator/issues)

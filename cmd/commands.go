@@ -64,20 +64,12 @@ var Commands = map[string]Command{
 	},
 }
 
-// RunCommand executes the specified command with the given configuration
-// ErrUsage marks a command line the CLI cannot run, such as an unknown
-// command or extra arguments; main exits with 2 for it.
-var ErrUsage = errors.New("usage")
-
+// RunCommand runs a command that ParseArgs accepted.
 func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command string, args []string) error {
 	cmd, ok := Commands[command]
 	if !ok {
-		return fmt.Errorf("%w: unknown command %q", ErrUsage, command)
+		return fmt.Errorf("unknown command %q", command)
 	}
-	if cmd.MaxArgs >= 0 && len(args) > cmd.MaxArgs {
-		return fmt.Errorf("%w: %s takes at most %d argument(s): %s", ErrUsage, command, cmd.MaxArgs, cmd.Usage)
-	}
-
 	if err := cfg.Validate(command); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -99,7 +91,6 @@ func newClient(ctx context.Context, cfg *technitium.ClientConfig) (*technitium.C
 	return client, nil
 }
 
-// authenticate uses the API token when one is configured, otherwise logs in.
 // authenticate starts a session from the API token, checked with the server
 // first, or from the username and password.
 func authenticate(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig) error {
