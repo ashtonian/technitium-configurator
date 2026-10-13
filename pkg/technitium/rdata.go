@@ -676,7 +676,7 @@ func Unexportable(e RecordEntry) string {
 		_ = json.Unmarshal(e.RData["characterStringsBase64"], &b64)
 		for _, s := range b64 {
 			if s == "" {
-				return "TXT records with an empty character string cannot be written through the API"
+				return "TXT records with an empty character string cannot be written by the configurator"
 			}
 		}
 	}

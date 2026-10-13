@@ -131,6 +131,14 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
+          # A release must report its tag without the "v", whatever
+          # metadata-action derived; other builds report the metadata version.
+          # The Dockerfile falls back to "dev" when no version is given.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            expected="${GITHUB_REF_NAME#v}"
+          else
+            expected="${VERSION:-dev}"
+          fi
           for arch in amd64 arm64; do
             bin="out/linux_${arch}/technitium-configurator"
             case "$arch" in
@@ -139,8 +147,7 @@ jobs:
             esac
             file "$bin" | tee /dev/stderr | grep -q "$want"
             # arm64 runs under the QEMU emulator set up above.
-            # The Dockerfile falls back to "dev" when no version is given.
-            "$bin" version | tee /dev/stderr | grep -qF "technitium-configurator ${VERSION:-dev} "
+            "$bin" version | tee /dev/stderr | grep -qF "technitium-configurator ${expected} "
           done
 
       - name: Build and push

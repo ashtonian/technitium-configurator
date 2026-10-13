@@ -80,9 +80,9 @@ Under `replace`, the declared values are compared with the server first, and not
 
 | Code | Meaning |
 |---|---|
-| `0` | Success. Conflicts are logged as warnings and do not change the code |
+| `0` | Success, or help was asked for (`help`, `--help`, `<command> --help`). Conflicts are logged as warnings and do not change the code |
 | `1` | The config is invalid, a prerequisite (settings, cluster, login) failed, or at least one operation failed. The run continues past individual failures and lists every one at the end |
-| `2` | Bad command-line usage: an unknown command, an unknown flag, or too many arguments |
+| `2` | Bad command-line usage: no command, an unknown command, an unknown flag, or too many arguments (`version` and `help` take none). The error and the usage text go to stderr |
 
 ## Commands
 
@@ -100,7 +100,7 @@ Flags go after the command: `technitium-configurator configure --log-level debug
 ## Quick start
 
 ```bash
-docker pull ashtonian/technitium-configurator:3.0.0
+docker pull ashtonian/technitium-configurator:3.0.1
 ```
 
 Images are published for `linux/amd64` and `linux/arm64`. They run as user `65532`, so a host directory the tool writes to must be writable by that user (or pass `--user`).
@@ -115,7 +115,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="admin" \
   -e DNS_NEW_PASSWORD="new-secure-password" \
-  ashtonian/technitium-configurator:3.0.0 change-password
+  ashtonian/technitium-configurator:3.0.1 change-password
 ```
 
 ### 2. Create an API token
@@ -132,7 +132,7 @@ docker run --rm \
   -e DNS_PASSWORD="new-secure-password" \
   -e DNS_TOKEN_PATH="/app/tokens/token.yaml" \
   -v "$(pwd)/tokens:/app/tokens" \
-  ashtonian/technitium-configurator:3.0.0 create-token
+  ashtonian/technitium-configurator:3.0.1 create-token
 ```
 
 To store the token in a Kubernetes Secret, run `create-token` where it has Kubernetes credentials: in a pod with a service account (see [`examples/k8s.yaml`](examples/k8s.yaml)), or with a mounted kubeconfig and `KUBECONFIG` set. Set `DNS_K8S_SECRET_NAME`, and optionally `DNS_K8S_SECRET_NAMESPACE` and `DNS_K8S_SECRET_KEY`.
@@ -144,7 +144,7 @@ docker run --rm \
   -e DNS_API_URL="http://dns-server:5380" \
   -e DNS_API_TOKEN="your-token" \
   -v "$(pwd)/dns:/app/dns:ro" \
-  ashtonian/technitium-configurator:3.0.0 configure /app/dns
+  ashtonian/technitium-configurator:3.0.1 configure /app/dns
 ```
 
 ### 4. Export a running server
@@ -153,10 +153,10 @@ docker run --rm \
 docker run --rm \
   -e DNS_API_URL="http://dns-server:5380" \
   -e DNS_API_TOKEN="your-token" \
-  ashtonian/technitium-configurator:3.0.0 export > dns.yaml
+  ashtonian/technitium-configurator:3.0.1 export > dns.yaml
 ```
 
-Applying an export to the server it came from changes nothing. Applying it to a fresh server reproduces everything the export holds, once you add a password source for each user (passwords cannot be read back) and a `url` for any app that is not in the App Store. Cluster membership is not exported, so set the `cluster` section up separately. `export` loads its own output before writing it and refuses to write a file that would not load.
+Applying an export to the server it came from changes nothing. Applying it to a fresh server reproduces everything the export holds, once you add a password source for each user (passwords cannot be read back) and a `url` for every app the export left without one: apps that are not in the App Store, or every app when the App Store could not be read. An exported `url` is the store's current package, which the header notes when it is newer than the installed version. Cluster membership is not exported, so set the `cluster` section up separately. `export` loads its own output before writing it and refuses to write a file that would not load.
 
 The export contains secrets: TSIG keys, FWD and global proxy credentials, and app configs. It leaves out:
 
@@ -164,7 +164,7 @@ The export contains secrets: TSIG keys, FWD and global proxy credentials, and ap
 - the cluster: the `cluster` section, the cluster catalog zone, the cluster's TSIG key, and zones provisioned by secondary catalogs;
 - disabled records, user passwords, and certificate passwords the server masks.
 
-Its header also lists what this particular server had that was left out, such as disabled records or apps outside the App Store.
+Its header summarizes what it found on this server and left out: per zone, how many records were skipped and why (disabled, or a value the configurator cannot write), plus apps without a `url` or with a newer package. The categories in the list above are left out without a note.
 
 ## Configuration
 
@@ -228,7 +228,7 @@ technitium-configurator configure --config client.yaml dns/
 technitium-configurator configure base.yaml zones/
 ```
 
-**Validation.** The whole input is checked before anything changes. YAML syntax errors and keys set in two files stop loading at the first one; after that, every problem is reported at once: unknown keys, missing required fields, values outside the server's ranges, unknown enum values (including ones the server would silently ignore, such as zone ACL options), malformed addresses, endpoints, networks and name server addresses, and contradictory combinations. TTLs are limited to 2147483647, the RFC 2181 maximum, although the server stores larger values. App `config` blocks are checked only for being representable as JSON, since their keys belong to each app. Each error names the file and document it came from:
+**Validation.** The whole input is checked before anything changes. YAML syntax errors and keys set in two files stop loading at the first one; after that, every problem is reported at once: unknown keys, missing required fields, values outside the server's ranges, unknown enum values (including ones the server would silently ignore, such as zone ACL options), malformed addresses, endpoints, networks and name server addresses, DS, SSHFP and TLSA digests whose length does not match their digest type, and contradictory combinations. TTLs are limited to 2147483647, the RFC 2181 maximum, although the server stores larger values. App `config` blocks are checked only for being representable as JSON, since their keys belong to each app. Each error names the file and document it came from:
 
 ```text
 invalid config: zones/b.yaml (document 2): zones[0] (example.com): duplicate zone; first declared at base.yaml: zones[3] (example.com)
@@ -279,7 +279,7 @@ Every record has `domain` (or its alias `name`) and `type`, plus optionally `zon
 | NS | `nameServer`, `glue` |
 | CNAME, PTR, DNAME, ANAME | `cname`, `ptrName`, `dname`, `aname` |
 | MX | `exchange`, `preference` |
-| TXT | `text` and `splitText`, or `characterStringsBase64` for byte-exact character strings. `text: ""` is a record without strings. A character string that is itself empty cannot be written through the API and is rejected |
+| TXT | `text` and `splitText`, or `characterStringsBase64` for byte-exact character strings. `text: ""` is a record without strings. A character string that is itself empty cannot be written by the configurator: it is rejected in a config, and `export` skips such a record and counts it in its header |
 | RP | `mailbox`, `txtDomain` |
 | SRV | `priority`, `weight`, `port`, `target` |
 | NAPTR | `naptrOrder`, `naptrPreference`, `naptrFlags`, `naptrServices`, `naptrRegexp`, `naptrReplacement` |
@@ -394,7 +394,7 @@ apps:
     url: "https://download.technitium.com/dns/apps/NoDataApp-v6.zip"
 ```
 
-- `config` is converted to JSON and passed to the app, so every field the app accepts can be used. YAML merge keys (`<<`) are resolved; duplicate keys and aliases that contain themselves are errors. Give the **complete** document: apps reject a config with missing keys. Start from the app's `dnsApp.config` in the [Technitium source](https://github.com/TechnitiumSoftware/DnsServer/tree/master/Apps).
+- `config` is converted to JSON and passed to the app, so every field the app accepts can be used. YAML merge keys (`<<`) are resolved; duplicate keys (including a second `<<` in one mapping: merge several with `<<: [*a, *b]`) and aliases that contain themselves are errors. Give the **complete** document: apps reject a config with missing keys. Start from the app's `dnsApp.config` in the [Technitium source](https://github.com/TechnitiumSoftware/DnsServer/tree/master/Apps).
 - Leave `config` out to keep the app's current config. Apps used only through APP records (NO DATA, Auto PTR, Wild IP and others) need none.
 - Config is written only when it differs from the stored config, compared as JSON; comments in the stored config are ignored, as the apps ignore them. Numbers keep every digit in any YAML spelling, so 64-bit integers and long decimals are passed exactly.
 - `url` is needed only to install the app. An installed app is not downloaded again; app upgrades and uninstalls are not performed.
@@ -445,9 +445,9 @@ go test -race ./...                  # unit tests
 go test -tags e2e ./e2e              # needs Docker; starts Technitium 15.6.1 containers
 ```
 
-The e2e suite checks the values a fresh install ends up with; that an unchanged re-run writes nothing but settings and zone options; record policies and values the server stores in another form; PTR preservation; IDN names; ACL clearing; administration; export applied back to its server and restored onto a fresh one; failure exit codes; and a two-node cluster in which zones replicate, a local zone stays local, and the secondary re-runs with its original credentials and with a token it no longer has.
+The e2e suite checks the values a fresh install ends up with; that an unchanged re-run writes nothing but settings and zone options; record policies and values the server stores in another form; PTR preservation; IDN names; ACL clearing; administration; export applied back to its server and restored onto a fresh one; the binary's exit codes and output streams; and a two-node cluster in which zones replicate, a local zone stays local, and the secondary re-runs with its original credentials and with a token it no longer has.
 
-GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on every pull request and push. Only when they pass does it build both platforms' binaries, check each one's architecture and version, and then build and push the images from the same inputs. Pushes to `main` publish `beta` and `beta-<date>-<sha>`. A `v*` tag publishes `<version>` (and `v<version>` for versions without a prerelease suffix), moves `latest` only for those, marks tags with a suffix as prereleases, and creates a GitHub release from that version's section of `RELEASE_NOTES.md`.
+GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on every pull request and push. Only when they pass does it build both platforms' binaries, check each one's architecture and that it reports the version (for a release, the tag without its `v`), and then build and push the images from the same inputs. Pushes to `main` publish `beta` and `beta-<date>-<sha>`. A `v*` tag publishes `<version>` (and `v<version>` for versions without a prerelease suffix), moves `latest` only for those, marks tags with a suffix as prereleases, and creates a GitHub release from that version's section of `RELEASE_NOTES.md`.
 
 ## Operations
 
@@ -502,7 +502,8 @@ GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on 
 
 | Path | Contents |
 |---|---|
-| `main.go` | CLI entry: flags, client configuration precedence, logging, signal handling, `version` |
+| `main.go` | CLI entry: client configuration precedence, logging, signal handling, exit codes, `version` output |
+| `cmd/cli.go` | Command-line parsing: commands, flags, arguments, usage text |
 | `cmd/commands.go` | Commands: `configure` entry, `create-token`, `change-password`, `export`, `cluster-state`; authentication |
 | `cmd/configure.go` | One configure pass: checks before any change, then settings, cluster, administration, zones, FWD records, apps, other records |
 | `pkg/technitium/client.go`, `errors.go`, `logging.go` | HTTP client, response envelope, typed errors, request logging |
@@ -513,7 +514,7 @@ GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on 
 | `pkg/technitium/export.go` | `export`: reading a server back into the schema |
 | `pkg/technitium/client_config.go` | Client configuration and its validation |
 | `pkg/kube` | Kubernetes Secret storage for `create-token` |
-| `e2e/` | End-to-end tests against Technitium containers |
+| `e2e/` | End-to-end tests against Technitium containers, and the built binary's exit codes |
 | `examples/` | DNS config, Docker Compose and Kubernetes examples |
 | `.github/workflows/` | CI: test, e2e, image build and release (`docker.yml`); Docker Hub overview publishing (`dockerhub-description.yml`) |
 | `.github/DOCKERHUB.md` | The Docker Hub overview; changes are published when they reach `main` |

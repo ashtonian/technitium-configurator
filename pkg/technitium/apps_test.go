@@ -2,6 +2,8 @@ package technitium
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -158,4 +160,48 @@ func TestExportedAppConfigOutOfRangeNumbers(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, `{"precise":1e400,"huge":123456789012345678901234567890,"neg":-1E-400}`, config)
+}
+
+// Each level merges the previous one twice: a naive walk takes 2^40 steps,
+// while resolving each mapping once fits a budget of a few thousand.
+func TestAppConfigJSONMergeChainIsBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("name: X\nconfig:\n  l0: &l0 {k: 1}\n")
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&b, "  l%d: &l%d\n    <<: [*l%d, *l%d]\n    k%d: %d\n", i, i, i-1, i-1, i, i)
+	}
+	var app AppConfig
+	require.NoError(t, yaml.Unmarshal([]byte(b.String()), &app))
+	root := &app.Config
+
+	var buf bytes.Buffer
+	require.NoError(t, newYAMLWalk(5000).toJSON(root, &buf))
+	// Merge entries are charged too, not only the values written.
+	err := newYAMLWalk(500).toJSON(root, &bytes.Buffer{})
+	assert.ErrorContains(t, err, "too many values")
+}
+
+func TestAppConfigJSONScalars(t *testing.T) {
+	tests := []struct{ config, want string }{
+		{"big: 1e400", `{"big":1e400}`},
+		{"big: -1E+400", `{"big":-1E+400}`},
+		{"big: 0xffffffffffffffffffffffff", `{"big":79228162514264337593543950335}`},
+		{"quoted: '1e400'", `{"quoted":"1e400"}`},
+		{"tagged: !!str 1e400", `{"tagged":"1e400"}`},
+		{"version: 1.2.3", `{"version":"1.2.3"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.config, func(t *testing.T) {
+			var app AppConfig
+			require.NoError(t, yaml.Unmarshal([]byte("name: X\nconfig:\n  "+tt.config+"\n"), &app))
+			got, _, err := app.ConfigJSON()
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	var app AppConfig
+	require.NoError(t, yaml.Unmarshal([]byte("name: X\nconfig:\n  <<: {x: 1}\n  <<: {x: 2}\n"), &app))
+	_, _, err := app.ConfigJSON()
+	assert.ErrorContains(t, err, `key "<<" is already defined`)
 }

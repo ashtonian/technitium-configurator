@@ -3,11 +3,13 @@ package technitium
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/mail"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -409,7 +411,7 @@ func (cc *ClusterConfig) validate(v *validator) {
 		if cc.PrimaryURL != "" {
 			if u, err := url.Parse(cc.PrimaryURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 				v.addf("cluster.primaryURL must be an http or https URL")
-			} else if _, err := netip.ParseAddr(u.Hostname()); err == nil {
+			} else if serverIP(u.Hostname()) {
 				v.addf("cluster.primaryURL must use a host name, not an IP address; put the address in primaryIP")
 			}
 		}
@@ -515,7 +517,7 @@ func validateRecord(v *validator, at string, r AddRecordRequest) {
 				v.addf("%s.characterStringsBase64[%d] is not valid base64", at, i)
 			} else if len(b) == 0 {
 				// The API takes the list comma-joined and drops empty entries.
-				v.addf("%s.characterStringsBase64[%d] is empty; the API cannot write an empty character string (use text: \"\" for a record without strings)", at, i)
+				v.addf("%s.characterStringsBase64[%d] is empty; the configurator cannot write an empty character string (use text: \"\" for a record without strings)", at, i)
 			} else if len(b) > 255 {
 				v.addf("%s.characterStringsBase64[%d] is %d bytes; a character string holds at most 255", at, i, len(b))
 			}
@@ -526,8 +528,8 @@ func validateRecord(v *validator, at string, r AddRecordRequest) {
 		// Any other type is sent as raw RDATA.
 		if r.RData == "" {
 			v.addf("%s: rdata (hex) is required for %s records", at, typ)
-		} else if _, err := hex.DecodeString(strings.NewReplacer(":", "", " ", "").Replace(r.RData)); err != nil {
-			v.addf("%s: rdata must be hex", at)
+		} else if !serverHex(r.RData) {
+			v.addf("%s: rdata must be hex digits, or colon-separated bytes such as 0a:0b", at)
 		}
 	}
 	for _, p := range required {
@@ -566,6 +568,8 @@ func validateRecord(v *validator, at string, r AddRecordRequest) {
 		}
 	case RT_SVCB, RT_HTTPS:
 		validateSvcParams(v, at+".svcParams", r.SvcParams)
+	case RT_DS, RT_SSHFP, RT_TLSA:
+		validateDigest(v, at, typ, r)
 	case RT_FWD:
 		v.enum(at+".protocol", nonEmpty(string(r.Protocol)), "Udp", "Tcp", "Tls", "Https", "Quic")
 		if r.Forwarder != "" && r.Forwarder != "this-server" {
@@ -780,7 +784,7 @@ func (v *validator) endpoint(field, s string) {
 	if i := strings.LastIndexByte(host, '%'); i >= 0 {
 		host = host[:i]
 	}
-	if _, err := netip.ParseAddr(host); err != nil {
+	if !serverIP(host) {
 		v.addf("%s %q is not an address or address:port", field, s)
 		return
 	}
@@ -894,14 +898,14 @@ func parseNameServer(address string) error {
 	// DomainEndPoint is built first and rejects an address or a malformed
 	// name before the part in parentheses is looked at.
 	if domainName != "" {
-		if _, err := netip.ParseAddr(domainName); err == nil {
+		if serverIP(domainName) {
 			return fmt.Errorf("%q before the parentheses must be a host name, not an address", domainName)
 		}
 		if !validDomainName(domainName) {
 			return fmt.Errorf("%q is not a host name", domainName)
 		}
 	}
-	_, ipErr := netip.ParseAddr(host)
+	hostIsIP := serverIP(host)
 	if doh != nil {
 		if host == "" {
 			return nil
@@ -909,7 +913,7 @@ func parseNameServer(address string) error {
 		if dohPort := urlPort(doh, nameServerScheme(doh.String())); port != 0 && port != dohPort {
 			return errors.New("the ports disagree")
 		}
-		if ipErr != nil {
+		if !hostIsIP {
 			return errors.New("the address in parentheses must be an IP address")
 		}
 		return nil
@@ -918,7 +922,7 @@ func parseNameServer(address string) error {
 		return errors.New("the ports disagree")
 	}
 	switch {
-	case ipErr == nil:
+	case hostIsIP:
 		return nil
 	case domainName != "" || ipv6Host:
 		return errors.New("the address must be an IP address")
@@ -974,8 +978,20 @@ func urlPort(u *url.URL, scheme string) int {
 // conversion: at most 255 characters, and labels of 1 to 63 characters from
 // letters, digits, "-", "_" and "/", or a lone "*".
 func validDomainName(s string) bool {
-	ascii, err := idnaProfile.ToASCII(s)
-	if err != nil || len(ascii) > 255 {
+	ascii := s
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			// The server converts only Unicode names; ASCII ones are checked
+			// as written, without IDNA's extra rules on hyphens.
+			converted, err := idnaProfile.ToASCII(s)
+			if err != nil {
+				return false
+			}
+			ascii = converted
+			break
+		}
+	}
+	if len(ascii) > 255 {
 		return false
 	}
 	for _, label := range strings.Split(ascii, ".") {
@@ -996,4 +1012,134 @@ func validDomainName(s string) bool {
 
 func domainLabelChar(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '/'
+}
+
+// serverIP reports whether the server's IPAddress.TryParse reads s as an
+// address. Besides the forms netip accepts, .NET reads IPv4 in the legacy
+// forms inet_aton does: 127.1, 2130706433, 0x7f000001, 0177.0.0.1.
+func serverIP(s string) bool {
+	if _, err := ParseIP(s); err == nil {
+		return true
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) > 4 {
+		return false
+	}
+	values := make([]uint64, len(parts))
+	for i, p := range parts {
+		base, digits := 10, p
+		switch {
+		case strings.HasPrefix(p, "0x") || strings.HasPrefix(p, "0X"):
+			base, digits = 16, p[2:]
+		case len(p) > 1 && p[0] == '0':
+			base, digits = 8, p[1:]
+		}
+		n, err := strconv.ParseUint(digits, base, 32)
+		if err != nil {
+			return false
+		}
+		values[i] = n
+	}
+	// Every part but the last is one byte; the last fills the rest.
+	for _, n := range values[:len(values)-1] {
+		if n > 255 {
+			return false
+		}
+	}
+	return values[len(values)-1] < 1<<(8*(5-len(values)))
+}
+
+// serverHex reports whether the server's generic rdata parser accepts s:
+// colon-separated bytes when s has a colon (ParseColonHexString), otherwise
+// an even number of hex digits (Convert.FromHexString).
+func serverHex(s string) bool {
+	if strings.Contains(s, ":") {
+		for _, part := range strings.Split(s, ":") {
+			if n, err := strconv.ParseUint(part, 16, 64); err != nil || n > 255 {
+				return false
+			}
+		}
+		return true
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+// Digest lengths in bytes that DnsDSRecordData, DnsSSHFPRecordData and
+// DnsTLSARecordData require, by type as the comparison key spells it.
+// TLSA Full takes any non-empty data (-1).
+var digestLengths = map[RecordType]map[string]int{
+	RT_DS:    {"SHA1": 20, "SHA256": 32, "GOSTR341194": 32, "SHA384": 48},
+	RT_SSHFP: {"SHA1": 20, "SHA256": 32},
+	RT_TLSA:  {"FULL": -1, "SHA2256": 32, "SHA2512": 64},
+}
+
+// validateDigest checks a DS digest, SSHFP fingerprint or TLSA association
+// data against its type before anything is sent; the server rejects a
+// wrong length only when the record is added. These fields are plain hex
+// (Convert.FromHexString); TLSA also takes a PEM certificate.
+func validateDigest(v *validator, at string, typ RecordType, r AddRecordRequest) {
+	var field, value, kind string
+	var typeField rdataField
+	switch typ {
+	case RT_DS:
+		field, value, kind, typeField = "digest", r.Digest, string(r.DigestType), recordFields[RT_DS][2]
+		v.enumField(at+".algorithm", string(r.Algorithm), recordFields[RT_DS][1])
+	case RT_SSHFP:
+		field, value, kind, typeField = "sshfpFingerprint", r.SSHFPFingerprint, string(r.SSHFPFingerprintType), recordFields[RT_SSHFP][1]
+		v.enumField(at+".sshfpAlgorithm", string(r.SSHFPAlgorithm), recordFields[RT_SSHFP][0])
+	case RT_TLSA:
+		field, value, kind, typeField = "tlsaCertificateAssociationData", r.TLSACertificateAssociationData, string(r.TLSAMatchingType), recordFields[RT_TLSA][2]
+		v.enumField(at+".tlsaCertificateUsage", string(r.TLSACertificateUsage), recordFields[RT_TLSA][0])
+		v.enumField(at+".tlsaSelector", string(r.TLSASelector), recordFields[RT_TLSA][1])
+		if strings.HasPrefix(value, "-") {
+			return // a PEM certificate; the server computes the data from it
+		}
+	}
+	if kind == "" || value == "" {
+		return // reported as required
+	}
+	want, known := digestLengths[typ][typeField.normalize(jsonString(kind))]
+	if !known {
+		v.addf("%s.%s: %q is not a type the server supports for %s records", at, typeField.param, kind, typ)
+		return
+	}
+	b, err := hex.DecodeString(value)
+	switch {
+	case err != nil:
+		v.addf("%s.%s must be hex digits without separators", at, field)
+	case want == -1 && len(b) == 0:
+		v.addf("%s.%s must not be empty", at, field)
+	case want > 0 && len(b) != want:
+		v.addf("%s.%s is %d bytes; %s %s needs %d", at, field, len(b), typ, kind, want)
+	}
+}
+
+// enumField checks a value against a field's enum: a name the table knows,
+// or any number that fits the byte, which Enum.Parse accepts and these
+// record constructors do not check.
+func (v *validator) enumField(field, value string, f rdataField) {
+	if value == "" {
+		return
+	}
+	if n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && n >= 0 && n <= 255 {
+		return
+	}
+	got := f.normalize(jsonString(value))
+	for _, name := range f.enum {
+		if normalize(kindEnum, jsonString(name)) == got {
+			return
+		}
+	}
+	names := make([]string, 0, len(f.enum))
+	for _, name := range f.enum {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	v.addf("%s %q must be one of %s, or its number", field, value, strings.Join(names, ", "))
+}
+
+func jsonString(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return b
 }

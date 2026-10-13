@@ -1,3 +1,24 @@
+## v3.0.1
+
+Fixes input that v3.0.0 accepted but the server rejects, which could fail a run after settings or zones had already changed, and app config cases that were accepted with the wrong meaning. Configs that v3.0.0 applied correctly need no change.
+
+### Fixes
+
+- **Shorthand IPv4 addresses.** Hosts the server reads as IPv4, such as `127.1`, `2130706433`, `0x7f000001` and `127.000.000.001`, are treated as addresses in forwarders, endpoints and `cluster.primaryURL`. A forwarder like `127.1 (192.0.2.1)`, whose part before the parentheses must be a host name, is rejected before any change instead of failing inside the settings call after earlier settings were applied.
+- **ASCII host names are checked with the server's rules.** Names such as `-dns.example`, `dns-.example`, `ab--cd.example` and `xn--.example`, which the server accepts but IDNA's stricter rules refused, are accepted again, and `export` no longer refuses to write a server that holds one. Unicode names are still converted and checked as before.
+- **DS, SSHFP and TLSA digests are checked before any change.** The digest, fingerprint or association data must have the length its type requires (for example 32 bytes for SHA256), and algorithms, digest types, usages and selectors must be a name the server knows or a number from 0 to 255. Before, a wrong length failed only when the record was written, after settings and zones had changed. Hex `rdata` is checked the way the server parses it: plain hex digits, or colon-separated bytes.
+- **App config merge keys.** A mapping with two `<<` keys is an error; merge several mappings with `<<: [*a, *b]`. Before, the second one was accepted and could silently override the first. Deeply chained merges are expanded once each and count towards the size limit, so a small file can no longer stall validation.
+- **Large numbers in app config.** Plain numbers outside the 64-bit range, such as `1e400` or a long hex integer, are passed to the app as JSON numbers. Before, they became strings. Quoted values and values tagged `!!str` stay strings.
+- **`export` and an unreachable App Store.** One note now says the store could not be read and names every app left without a `url`. Before, each app was also reported as not being in the App Store.
+- **Command line.** `help`, `--help` and `<command> --help` exit `0`. `version` and `help` with extra arguments exit `2`. Usage errors print to stderr, so stdout carries only command output.
+- **Version output.** Binaries and image labels report `3.0.1`, without the `v` that the `3.0.0` images printed. Release CI checks that both platforms' binaries report the tag's version.
+
+### Documentation
+
+- TXT records containing an empty character string cannot be written by the configurator; the server itself can hold them. `export` skips them and counts them in its header.
+- The export header summarizes omissions per zone and reason; the categories the README lists are left out without a note. After an export, add a `url` for every app it left without one.
+- `replace` owns the values of each name and type a file declares.
+
 ## v3.0.0
 
 v3 targets Technitium DNS Server v15.6.0 and later and makes `configure` a dependable bootstrapper. The first run sets up a fresh server. Every later run succeeds without changing what is already there: records, apps, users, groups and permissions are compared with the server and only differences are sent, while settings and zone options are sent as before in one idempotent call each. Problems the tool can detect stop the run before anything changes. New in this release: record policies, `export`, config directories and multi-document files, and users, groups and permissions. Each release supports the current Technitium version only.
@@ -37,8 +58,8 @@ v3 targets Technitium DNS Server v15.6.0 and later and makes `configure` a depen
 - **Checks before any change.** After the files are validated, the run places every record against the server's zones and checks the cluster timing options against the current ones before it changes anything. A record no zone contains or whose named zone does not exist, two values for a CNAME, DNAME or APP name, conflicting policies for one name and type, an FWD record outside a Forwarder zone, and timing options the server would reject stop the run. Problems only the server can find still fail during the run.
 - **`export`** writes a running server's settings, zones, records, apps, groups, users and permissions as a DNS config file you can edit and apply again.
   - Applied to the same server, it changes nothing.
-  - Applied to a fresh server, it reproduces what it holds once you add password sources for users and package URLs for apps outside the App Store. Cluster membership is set up separately.
-  - It keeps the root zone, disabled zones, zones kept out of the cluster catalog, NS glue, TXT without strings, binary TXT, and exact app config numbers. Records the API cannot write back, such as a TXT record containing an empty character string, are skipped and named in the export's header.
+  - Applied to a fresh server, it reproduces what it holds once you add password sources for users and package URLs for apps it has none for (apps outside the App Store, or every app when the store could not be read). Cluster membership is set up separately.
+  - It keeps the root zone, disabled zones, zones kept out of the cluster catalog, NS glue, TXT without strings, binary TXT, and exact app config numbers. Records the configurator cannot write, such as a TXT record containing an empty character string, are skipped and counted per zone in the export's header.
   - It checks that its output loads before writing it.
   - User passwords, masked certificate passwords and everything the cluster owns are left out.
 - **Several files, directories and documents.** `configure base.yaml zones/` merges every file, every `*.yaml` and `*.yml` in a directory, and every `---` document. Lists are combined. `recordPolicy`, `cluster` and each `dnsSettings` key may be set in only one place, and duplicate zones, apps, groups, users and TSIG keys are errors. Validation and record placement errors name the file and document they come from.

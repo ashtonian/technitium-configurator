@@ -104,6 +104,10 @@ func TestSettingsValidation(t *testing.T) {
 		{"forwarders: ['bad domain (192.0.2.1)']\n  forwarderProtocol: Udp", `"bad domain" is not a host name`},
 		{"forwarders: ['192.0.2.1 (192.0.2.2)']\n  forwarderProtocol: Udp", "must be a host name, not an address"},
 		{"forwarders: ['bad..name (192.0.2.1)']\n  forwarderProtocol: Udp", `"bad..name" is not a host name`},
+		{"forwarders: ['127.1 (192.0.2.1)']\n  forwarderProtocol: Udp", "must be a host name, not an address"},
+		{"forwarders: ['2130706433 (192.0.2.1)']\n  forwarderProtocol: Udp", "must be a host name, not an address"},
+		{"forwarders: ['0x7f000001 (192.0.2.1)']\n  forwarderProtocol: Udp", "must be a host name, not an address"},
+		{"forwarders: ['127.000.000.001 (192.0.2.1)']\n  forwarderProtocol: Udp", "must be a host name, not an address"},
 		{"tsigKeys: [{keyName: k, algorithmName: hmac-sha256, sharedSecret: 'not base64!'}]", "sharedSecret must be base64"},
 	}
 	for _, tt := range tests {
@@ -122,7 +126,8 @@ func TestSettingsValidation(t *testing.T) {
 
 	_, err = load("dnsSettings:\n  forwarderProtocol: Https\n" +
 		"  forwarders: ['https://dns.quad9.net/dns-query (9.9.9.9)', 'tls://dns.google', '[2620:fe::fe]:53', 'dns.google:853', 'one.one.one.one', '1.1.1.1'," +
-		" 'dns.quad9.net (9.9.9.9)', 'dns.google:853 (8.8.8.8:853)', 'tls://dns.google (8.8.8.8)', 'h3://dns.example/dns-query']\n")
+		" 'dns.quad9.net (9.9.9.9)', 'dns.google:853 (8.8.8.8:853)', 'tls://dns.google (8.8.8.8)', 'h3://dns.example/dns-query'," +
+		" '-dns.example (192.0.2.1)', 'dns-.example (192.0.2.1)', 'ab--cd.example (192.0.2.1)', 'xn--.example (192.0.2.1)', 'dns.example (127.1)']\n")
 	assert.NoError(t, err, "every name server address form the server parses")
 }
 
@@ -169,6 +174,14 @@ func TestRecordValidation(t *testing.T) {
 		{"{domain: a.test, type: BOGUS, rdata: '00'}", `unknown record type "BOGUS"`},
 		{"{domain: a.test, type: A, ipAddress: request-ip-address, ptr: true}", "ptr cannot be used with request-ip-address"},
 		{"{domain: a.test, type: TXT, characterStringsBase64: ['YQ==', '', 'Yg==']}", "characterStringsBase64[1] is empty"},
+		{"{domain: a.test, type: DS, keyTag: 1, algorithm: RSASHA256, digestType: SHA256, digest: abab}", "digest is 2 bytes; DS SHA256 needs 32"},
+		{"{domain: a.test, type: DS, keyTag: 1, algorithm: 8, digestType: '+2', digest: abab}", "digest is 2 bytes"},
+		{"{domain: a.test, type: DS, keyTag: 1, algorithm: 8, digestType: SHA512, digest: abab}", `"SHA512" is not a type the server supports`},
+		{"{domain: a.test, type: DS, keyTag: 1, algorithm: RSASHA9, digestType: 2, digest: abababababababababababababababababababababababababababababababab}", `algorithm "RSASHA9" must be one of`},
+		{"{domain: a.test, type: SSHFP, sshfpAlgorithm: Ed25519, sshfpFingerprintType: SHA256, sshfpFingerprint: 'ab:cd'}", "must be hex digits without separators"},
+		{"{domain: a.test, type: TLSA, tlsaCertificateUsage: DANE-EE, tlsaSelector: SPKI, tlsaMatchingType: SHA2-256, tlsaCertificateAssociationData: abab}", "is 2 bytes; TLSA SHA2-256 needs 32"},
+		{"{domain: a.test, type: TYPE65200, rdata: '0a 0b'}", "rdata must be hex digits"},
+		{"{domain: a.test, type: TYPE65200, rdata: '0a::0b'}", "rdata must be hex digits"},
 		{"{domain: a.test, type: ANY, rdata: '00'}", "ANY records cannot be declared"},
 		{"{domain: a.test, type: NAPTR, naptrOrder: 1, naptrPreference: 1}", "naptrRegexp or naptrReplacement is required"},
 		{"{domain: a.test, type: NAPTR, naptrOrder: 1, naptrPreference: 1, naptrFlags: 'u!', naptrReplacement: x.test}", "naptrFlags may hold only letters and digits"},
@@ -250,6 +263,17 @@ func TestMergePermissions(t *testing.T) {
 		{Name: "readers", Access: Access{View: true, Modify: true}},
 		{Name: "auditors", Access: Access{View: true}},
 	}, merged, "grants the file does not name are kept")
+}
+
+func TestDigestAndRDataAccepted(t *testing.T) {
+	_, err := load("records:\n" +
+		"  - {domain: a.test, type: DS, keyTag: 1, algorithm: '013', digestType: '+2', digest: abababababababababababababababababababababababababababababababab}\n" +
+		"  - {domain: b.test, type: DS, keyTag: 1, algorithm: 99, digestType: SHA1, digest: abababababababababababababababababababab}\n" +
+		"  - {domain: c.test, type: SSHFP, sshfpAlgorithm: 4, sshfpFingerprintType: 2, sshfpFingerprint: abababababababababababababababababababababababababababababababab}\n" +
+		"  - {domain: d.test, type: TLSA, tlsaCertificateUsage: 3, tlsaSelector: 1, tlsaMatchingType: Full, tlsaCertificateAssociationData: 3082}\n" +
+		"  - {domain: e.test, type: TLSA, tlsaCertificateUsage: DANE-EE, tlsaSelector: Cert, tlsaMatchingType: SHA2-512, tlsaCertificateAssociationData: '-----BEGIN CERTIFICATE-----'}\n" +
+		"  - {domain: f.test, type: TYPE65200, rdata: '0a:b:ff'}\n  - {domain: g.test, type: TYPE65200, rdata: 0A0B}\n")
+	assert.NoError(t, err, "numbers and names, PEM input, and both rdata forms")
 }
 
 func TestZoneValidation(t *testing.T) {

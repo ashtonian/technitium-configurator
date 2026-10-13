@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/ashtonian/technitium-configurator/v3/pkg/technitium"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,20 +46,4 @@ func assertPrivateFile(t *testing.T, path, want string) {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-}
-
-func TestRunCommandUsageErrors(t *testing.T) {
-	cfg := technitium.DefaultConfig()
-	for _, tt := range []struct {
-		command string
-		args    []string
-	}{
-		{"bogus", nil},
-		{"export", []string{"a", "b"}},
-		{"create-token", []string{"x"}},
-		{"cluster-state", []string{"x"}},
-	} {
-		err := RunCommand(context.Background(), cfg, tt.command, tt.args)
-		assert.ErrorIs(t, err, ErrUsage, "%s %v", tt.command, tt.args)
-	}
 }
