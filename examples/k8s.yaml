@@ -66,16 +66,16 @@ data:
         type:  "Forwarder"
         initializeForwarder: true
         protocol: "Udp"
-        forwarder: "172.0.0.1"
+        forwarder: "10.0.0.1"
         dnssecValidation: false
         aclSettings:
           queryAccess: AllowOnlyPrivateNetworks
           zoneTransfer: UseSpecifiedNetworkACL
-          zoneTransferNetworkACL: ["172.0.0.0/8"]
+          zoneTransferNetworkACL: ["10.0.0.0/8"]
           zoneTransferTsigKeyNames: ["external-dns"]
           update: "UseSpecifiedNetworkACL"
           updateNetworkACL:
-            - "172.0.0.0/8"
+            - "10.0.0.0/8"
           # tsigKeyName|domain|allowed types, repeated for each policy
           updateSecurityPolicies: "external-dns|*.somedomain.com|ANY|external-dns|somedomain.com|ANY"
       - zone:  "someotherdomain.com"
@@ -173,10 +173,16 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: technitium-configurator
+  # A Job runs once and its pod template cannot be changed. To apply an edited
+  # config, delete the Job and apply it again. Under Argo CD, make it a sync
+  # hook instead, so every sync re-runs it:
+  # annotations:
+  #   argocd.argoproj.io/hook: Sync
+  #   argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   template:
     spec:
-      serviceAccountName: technitium-configur
+      serviceAccountName: technitium-configurator
       # change-password runs first: create-token logs in with the new password.
       # Both are safe to re-run.
       initContainers:
@@ -186,7 +192,7 @@ spec:
           - change-password
         env:
           - name: DNS_API_URL
-            value: http://172.0.0.2:5380
+            value: http://technitium:5380
           - name: DNS_USERNAME
             valueFrom:
               secretKeyRef:
@@ -207,7 +213,7 @@ spec:
         args: ["create-token"]
         env:
           - name: DNS_API_URL
-            value: http://172.0.0.2:5380
+            value: http://technitium:5380
           - name: DNS_USERNAME
             valueFrom:
               secretKeyRef:
@@ -218,14 +224,9 @@ spec:
               secretKeyRef:
                 name: technitium-credentials
                 key: new_password
+          # Stored in the Job's own namespace, under the key api-token.
           - name: DNS_K8S_SECRET_NAME
             value: technitium-api-token
-          - name: DNS_K8S_SECRET_NAMESPACE
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.namespace
-          - name: DNS_K8S_SECRET_KEY
-            value: api-token
       containers:
       - name: technitium-configurator
         image: ashtonian/technitium-configurator:3.0.1
@@ -234,7 +235,7 @@ spec:
           - /app/config.yaml
         env:
           - name: DNS_API_URL
-            value: http://172.0.0.2:5380
+            value: http://technitium:5380
           - name: DNS_USERNAME
             valueFrom:
               secretKeyRef:
@@ -258,7 +259,7 @@ spec:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: technitium-configur
+  name: technitium-configurator
 rules:
 # create-token reads and updates only the token Secret. Kubernetes cannot
 # scope "create" to a name, so it gets a separate rule; drop it if you
@@ -274,17 +275,17 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: technitium-configur
+  name: technitium-configurator
 subjects:
 - kind: ServiceAccount
-  name: technitium-configur
-  namespace: default
+  name: technitium-configurator
+  namespace: default  # the namespace the Job runs in
 roleRef:
   kind: Role
-  name: technitium-configur
+  name: technitium-configurator
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: technitium-configur
+  name: technitium-configurator

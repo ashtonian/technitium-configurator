@@ -132,13 +132,12 @@ func TestE2EIdempotency(t *testing.T) {
 		t.Error("token file changed between run 1 and run 2 — expected idempotent skip")
 	}
 
-	// configure again: everything already exists, so nothing may be
-	// reported as a failure or conflict.
+	// configure again, with the token file create-token wrote: everything
+	// already exists, so nothing may be reported as a failure or conflict.
 	out = runConfigurator(t, bin, "configure", envMap{
-		"DNS_API_URL":   apiURL,
-		"DNS_USERNAME":  defaultUser,
-		"DNS_PASSWORD":  newPassword,
-		"DNS_LOG_LEVEL": "debug",
+		"DNS_API_URL":        apiURL,
+		"DNS_API_TOKEN_FILE": tokenPath,
+		"DNS_LOG_LEVEL":      "debug",
 	}, dnsConfigPath)
 	assertCleanRerun(t, out)
 
@@ -574,14 +573,14 @@ apps:
 
 	// ── Verify cluster-state command still works ──────────
 	t.Log("=== Verify cluster-state command ===")
-	output := runConfigurator(t, bin, "cluster-state", envMap{
+	stdout := runConfiguratorStdout(t, bin, "cluster-state", envMap{
 		"DNS_API_URL":   primaryAPIURL,
 		"DNS_USERNAME":  defaultUser,
 		"DNS_PASSWORD":  newPassword,
 		"DNS_LOG_LEVEL": "info",
 	})
-	if !strings.Contains(output, "initialized=true") {
-		t.Errorf("cluster-state output missing initialized=true:\n%s", output)
+	if !strings.Contains(stdout, "clusterInitialized: true") || strings.Count(stdout, "- id: ") != 2 {
+		t.Errorf("cluster-state stdout does not show an initialized two-node cluster:\n%s", stdout)
 	}
 
 	// Export the primary and apply it back: nothing changes, and the zone
@@ -766,18 +765,7 @@ func waitForHealth(t *testing.T, url string, timeout time.Duration) {
 
 func runConfigurator(t *testing.T, bin, command string, env envMap, extraArgs ...string) string {
 	t.Helper()
-	args := []string{command}
-	args = append(args, extraArgs...)
-
-	cmd := exec.Command(bin, args...)
-	cmd.Env = []string{
-		"HOME=" + os.Getenv("HOME"),
-		"PATH=" + os.Getenv("PATH"),
-	}
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-
+	cmd := configuratorCmd(bin, command, env, extraArgs)
 	out, err := cmd.CombinedOutput()
 	output := string(out)
 	t.Logf("[%s] exit=%d\n%s", command, cmd.ProcessState.ExitCode(), output)
@@ -786,6 +774,35 @@ func runConfigurator(t *testing.T, bin, command string, env envMap, extraArgs ..
 		t.Fatalf("command %q failed: %v\n%s", command, err, output)
 	}
 	return output
+}
+
+// configuratorCmd builds a run of the binary with only HOME, PATH and env in
+// its environment, so the developer's own DNS_* variables cannot leak in.
+func configuratorCmd(bin, command string, env envMap, extraArgs []string) *exec.Cmd {
+	cmd := exec.Command(bin, append([]string{command}, extraArgs...)...)
+	cmd.Env = []string{
+		"HOME=" + os.Getenv("HOME"),
+		"PATH=" + os.Getenv("PATH"),
+	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	return cmd
+}
+
+// runConfiguratorStdout runs a command that must succeed and returns its
+// stdout alone, so callers can check that output does not go to stderr.
+func runConfiguratorStdout(t *testing.T, bin, command string, env envMap, extraArgs ...string) string {
+	t.Helper()
+	cmd := configuratorCmd(bin, command, env, extraArgs)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	t.Logf("[%s] exit=%d\nstdout:\n%s\nstderr:\n%s", command, cmd.ProcessState.ExitCode(), stdout.String(), stderr.String())
+	if err != nil {
+		t.Fatalf("command %q failed: %v", command, err)
+	}
+	return stdout.String()
 }
 
 // createLimitedToken creates a user in DNS Administrators, which may manage
@@ -812,14 +829,7 @@ func createLimitedToken(t *testing.T, apiURL, adminToken string) string {
 // runConfiguratorExpectFailure runs a command that must exit non-zero.
 func runConfiguratorExpectFailure(t *testing.T, bin, command string, env envMap, extraArgs ...string) string {
 	t.Helper()
-	cmd := exec.Command(bin, append([]string{command}, extraArgs...)...)
-	cmd.Env = []string{
-		"HOME=" + os.Getenv("HOME"),
-		"PATH=" + os.Getenv("PATH"),
-	}
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd := configuratorCmd(bin, command, env, extraArgs)
 	out, err := cmd.CombinedOutput()
 	output := string(out)
 	t.Logf("[%s] exit=%d (failure expected)\n%s", command, cmd.ProcessState.ExitCode(), output)

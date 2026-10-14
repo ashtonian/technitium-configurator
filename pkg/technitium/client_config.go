@@ -28,11 +28,14 @@ const (
 // where it reads and writes files. Values come from defaults, then the
 // optional client config file, then environment variables, then flags.
 type ClientConfig struct {
-	APIURL      string `yaml:"api_url" env:"DNS_API_URL"`
-	APIToken    string `yaml:"api_token" env:"DNS_API_TOKEN"`
-	Username    string `yaml:"username" env:"DNS_USERNAME"`
-	Password    string `yaml:"password" env:"DNS_PASSWORD"`
-	NewPassword string `yaml:"new_password" env:"DNS_NEW_PASSWORD"`
+	APIURL   string `yaml:"api_url" env:"DNS_API_URL"`
+	APIToken string `yaml:"api_token" env:"DNS_API_TOKEN"`
+	// APITokenFile holds the API token: the file create-token writes, or a
+	// bare token. Read by LoadAPITokenFile, which sets APIToken.
+	APITokenFile string `yaml:"api_token_file" env:"DNS_API_TOKEN_FILE"`
+	Username     string `yaml:"username" env:"DNS_USERNAME"`
+	Password     string `yaml:"password" env:"DNS_PASSWORD"`
+	NewPassword  string `yaml:"new_password" env:"DNS_NEW_PASSWORD"`
 	// ConfigPath is the DNS config file `configure` reads when no file
 	// argument is given.
 	ConfigPath string        `yaml:"config_path" env:"DNS_CONFIG_PATH"`
@@ -43,7 +46,8 @@ type ClientConfig struct {
 	// the wait.
 	WaitTimeout time.Duration `yaml:"wait_timeout" env:"DNS_WAIT_TIMEOUT"`
 	LogLevel    LogLevel      `yaml:"log_level" env:"DNS_LOG_LEVEL"`
-	// Kubernetes Secret that create-token stores the token in.
+	// Kubernetes Secret that create-token stores the token in. An empty
+	// namespace means the current one, as kubectl would choose it.
 	K8sSecretName      string `yaml:"k8s_secret_name" env:"DNS_K8S_SECRET_NAME"`
 	K8sSecretNamespace string `yaml:"k8s_secret_namespace" env:"DNS_K8S_SECRET_NAMESPACE"`
 	K8sSecretKey       string `yaml:"k8s_secret_key" env:"DNS_K8S_SECRET_KEY"`
@@ -52,12 +56,11 @@ type ClientConfig struct {
 // DefaultConfig returns a ClientConfig with default values.
 func DefaultConfig() *ClientConfig {
 	return &ClientConfig{
-		ConfigPath:         "config.yaml",
-		Timeout:            30 * time.Second,
-		WaitTimeout:        60 * time.Second,
-		LogLevel:           LogLevelInfo,
-		K8sSecretNamespace: "default",
-		K8sSecretKey:       "api-token",
+		ConfigPath:   "config.yaml",
+		Timeout:      30 * time.Second,
+		WaitTimeout:  60 * time.Second,
+		LogLevel:     LogLevelInfo,
+		K8sSecretKey: "api-token",
 	}
 }
 
@@ -148,8 +151,11 @@ func (c *ClientConfig) Validate(command string) error {
 		return fmt.Errorf("log level %q must be debug, info, warn or error", c.LogLevel)
 	}
 
-	if commandsNeedingAPIAuth[command] && c.APIToken == "" && (c.Username == "" || c.Password == "") {
-		return fmt.Errorf("%s needs an API token (DNS_API_TOKEN) or a username and password (DNS_USERNAME, DNS_PASSWORD)", command)
+	if c.APIToken != "" && c.APITokenFile != "" {
+		return errors.New("set an API token (DNS_API_TOKEN) or an API token file (DNS_API_TOKEN_FILE), not both")
+	}
+	if commandsNeedingAPIAuth[command] && c.APIToken == "" && c.APITokenFile == "" && (c.Username == "" || c.Password == "") {
+		return fmt.Errorf("%s needs an API token (DNS_API_TOKEN or DNS_API_TOKEN_FILE) or a username and password (DNS_USERNAME, DNS_PASSWORD)", command)
 	}
 
 	switch command {
@@ -164,5 +170,27 @@ func (c *ClientConfig) Validate(command string) error {
 			return errors.New("a token destination is required (set DNS_TOKEN_PATH and/or DNS_K8S_SECRET_NAME)")
 		}
 	}
+	return nil
+}
+
+// LoadAPITokenFile sets APIToken from APITokenFile for the commands that
+// authenticate with a token. The other commands leave the file unread, so a
+// client config shared with create-token can name a file it has yet to write.
+func (c *ClientConfig) LoadAPITokenFile(command string) error {
+	if c.APITokenFile == "" || !commandsNeedingAPIAuth[command] {
+		return nil
+	}
+	data, err := os.ReadFile(c.APITokenFile)
+	if err != nil {
+		return fmt.Errorf("read API token file: %w", err)
+	}
+	token, err := ParseTokenFile(data)
+	if err != nil {
+		return fmt.Errorf("read API token file %s: %w", c.APITokenFile, err)
+	}
+	if token == "" {
+		return fmt.Errorf("API token file %s holds no token", c.APITokenFile)
+	}
+	c.APIToken = token
 	return nil
 }

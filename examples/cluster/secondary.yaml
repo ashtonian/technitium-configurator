@@ -1,0 +1,9 @@
+# Cluster secondary: joins the primary. Settings, zones and records come from
+# the primary through the cluster, so this file holds only the join.
+cluster:
+  mode: "secondary"
+  nodeIPs: "172.28.0.11"
+  primaryURL: "http://dns-primary:5380"
+  primaryIP: "172.28.0.10"
+  primaryUsername: "admin"
+  primaryPassword: "securepassword"

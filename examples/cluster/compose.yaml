@@ -1,0 +1,88 @@
+# A two-node Technitium cluster, configured in order:
+#   1. configurator-primary   initializes the cluster on dns-primary and applies primary.yaml
+#   2. configurator-secondary joins dns-secondary to it (secondary.yaml)
+#
+#   docker compose up -d
+#   docker compose wait configurator-secondary
+#   docker compose logs configurator-primary configurator-secondary
+#
+# Both servers start with the admin password "securepassword", so there is no
+# change-password step. Web consoles: http://localhost:5380 (primary) and
+# http://localhost:5381 (secondary).
+
+x-dns-server: &dns-server
+  image: technitium/dns-server:15.6.1
+  environment:
+    - DNS_SERVER_ADMIN_PASSWORD=securepassword
+  healthcheck:
+    # The DNS health check API answers without a token from loopback only.
+    test: ["CMD-SHELL", "curl -fs http://127.0.0.1:5380/api/dnsClient/healthCheck | grep -q '\"status\":\"ok\"'"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 10s
+
+x-configurator: &configurator
+  image: ashtonian/technitium-configurator:3.0.1
+  command: configure /app/config.yaml
+  networks:
+    - cluster
+
+services:
+  dns-primary:
+    <<: *dns-server
+    hostname: dns-primary
+    ports:
+      - "127.0.0.1:5380:5380/tcp"
+    volumes:
+      - dns-primary-data:/etc/dns
+    networks:
+      cluster:
+        ipv4_address: 172.28.0.10
+
+  dns-secondary:
+    <<: *dns-server
+    hostname: dns-secondary
+    ports:
+      - "127.0.0.1:5381:5380/tcp"
+    volumes:
+      - dns-secondary-data:/etc/dns
+    networks:
+      cluster:
+        ipv4_address: 172.28.0.11
+
+  configurator-primary:
+    <<: *configurator
+    environment:
+      - DNS_API_URL=http://dns-primary:5380
+      - DNS_USERNAME=admin
+      - DNS_PASSWORD=securepassword
+    volumes:
+      - ./primary.yaml:/app/config.yaml:ro
+    depends_on:
+      dns-primary:
+        condition: service_healthy
+
+  configurator-secondary:
+    <<: *configurator
+    environment:
+      - DNS_API_URL=http://dns-secondary:5380
+      - DNS_USERNAME=admin
+      - DNS_PASSWORD=securepassword
+    volumes:
+      - ./secondary.yaml:/app/config.yaml:ro
+    depends_on:
+      dns-secondary:
+        condition: service_healthy
+      configurator-primary:
+        condition: service_completed_successfully
+
+networks:
+  cluster:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  dns-primary-data:
+  dns-secondary-data:

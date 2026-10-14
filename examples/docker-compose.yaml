@@ -2,18 +2,27 @@
 #   1. configurator-password changes the admin password set at first start
 #   2. configurator-configure applies ./config.yaml (examples/config.yaml)
 #
-#   docker compose up
+#   docker compose up -d
+#   docker compose wait configurator-configure
+#   docker compose logs configurator-password configurator-configure
 #
-# Both configurator steps are safe to re-run; `docker compose up` again
-# changes nothing that is already in place.
+# Then query it, or log in to http://localhost:5380 as admin / securepassword:
+#   dig @127.0.0.1 -p 1053 +short www.example.com
+#
+# Both configurator steps are safe to re-run. To apply an edited config.yaml:
+#   docker compose run --rm --no-deps configurator-configure
+#
+# A two-node cluster is in cluster/compose.yaml.
 
 services:
   dns:
     image: technitium/dns-server:15.6.1
     ports:
-      - "53:53/tcp"
-      - "53:53/udp"
-      - "5380:5380/tcp"  # web console and API
+      # Published on localhost:1053 so the example does not collide with a
+      # local resolver on port 53. Publish "53:53" to serve a network.
+      - "127.0.0.1:1053:53/tcp"
+      - "127.0.0.1:1053:53/udp"
+      - "127.0.0.1:5380:5380/tcp"  # web console and API
     environment:
       - DNS_SERVER_DOMAIN=dns.example.com
       # Password of the admin user on first start only.
@@ -55,113 +64,3 @@ services:
 
 volumes:
   dns-data:
-
-# ─── Cluster example ────────────────────────────────────────────────
-# Replace the services above with these to run a two-node cluster. Both
-# servers start with the admin password "securepassword", so no password
-# step is needed. Create primary.yaml and secondary.yaml next to this file:
-#
-#   # primary.yaml: cluster init plus the whole DNS config
-#   cluster:
-#     mode: "primary"
-#     domain: "dns-cluster.example.com"
-#     nodeIPs: "172.28.0.10"
-#     configRefreshIntervalSeconds: 60
-#   dnsSettings:
-#     dnsServerDomain: "primary.dns-cluster.example.com"   # inside the cluster domain
-#   zones:
-#     - zone: "example.com"        # joins the cluster catalog and replicates
-#       type: "Primary"
-#   records:
-#     - domain: "www.example.com"
-#       type: "A"
-#       ipAddress: "10.0.0.1"
-#
-#   # secondary.yaml: join only; zones replicate from the primary
-#   cluster:
-#     mode: "secondary"
-#     nodeIPs: "172.28.0.11"
-#     primaryURL: "http://dns-primary:5380"
-#     primaryIP: "172.28.0.10"
-#     primaryUsername: "admin"
-#     primaryPassword: "securepassword"
-#
-# services:
-#   dns-primary:
-#     image: technitium/dns-server:15.6.1
-#     ports:
-#       - "5380:5380/tcp"
-#     environment:
-#       - DNS_SERVER_DOMAIN=primary.dns-cluster.example.com
-#       - DNS_SERVER_ADMIN_PASSWORD=securepassword
-#     volumes:
-#       - dns-primary-data:/etc/dns
-#     networks:
-#       cluster:
-#         ipv4_address: 172.28.0.10
-#     healthcheck:
-#       test: ["CMD-SHELL", "curl -fs http://127.0.0.1:5380/api/dnsClient/healthCheck | grep -q '\"status\":\"ok\"'"]
-#       interval: 10s
-#       timeout: 5s
-#       retries: 6
-#
-#   dns-secondary:
-#     image: technitium/dns-server:15.6.1
-#     ports:
-#       - "5381:5380/tcp"
-#     environment:
-#       - DNS_SERVER_DOMAIN=secondary.dns-cluster.example.com
-#       - DNS_SERVER_ADMIN_PASSWORD=securepassword
-#     volumes:
-#       - dns-secondary-data:/etc/dns
-#     networks:
-#       cluster:
-#         ipv4_address: 172.28.0.11
-#     healthcheck:
-#       test: ["CMD-SHELL", "curl -fs http://127.0.0.1:5380/api/dnsClient/healthCheck | grep -q '\"status\":\"ok\"'"]
-#       interval: 10s
-#       timeout: 5s
-#       retries: 6
-#
-#   configurator-primary:
-#     image: ashtonian/technitium-configurator:3.0.1
-#     environment:
-#       - DNS_API_URL=http://dns-primary:5380
-#       - DNS_USERNAME=admin
-#       - DNS_PASSWORD=securepassword
-#     volumes:
-#       - ./primary.yaml:/app/config.yaml:ro
-#     depends_on:
-#       dns-primary:
-#         condition: service_healthy
-#     command: configure /app/config.yaml
-#     networks:
-#       - cluster
-#
-#   configurator-secondary:
-#     image: ashtonian/technitium-configurator:3.0.1
-#     environment:
-#       - DNS_API_URL=http://dns-secondary:5380
-#       - DNS_USERNAME=admin
-#       - DNS_PASSWORD=securepassword
-#     volumes:
-#       - ./secondary.yaml:/app/config.yaml:ro
-#     depends_on:
-#       dns-secondary:
-#         condition: service_healthy
-#       configurator-primary:
-#         condition: service_completed_successfully
-#     command: configure /app/config.yaml
-#     networks:
-#       - cluster
-#
-# networks:
-#   cluster:
-#     driver: bridge
-#     ipam:
-#       config:
-#         - subnet: 172.28.0.0/16
-#
-# volumes:
-#   dns-primary-data:
-#   dns-secondary-data:
