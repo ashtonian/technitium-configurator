@@ -19,6 +19,7 @@ const VersionCommand = "version"
 const envHelp = `Environment variables:
   DNS_API_URL               URL of the Technitium web service (required)
   DNS_API_TOKEN             API token; used instead of username and password
+  DNS_API_TOKEN_FILE        File holding the API token, such as create-token's
   DNS_USERNAME              Username for login, create-token and change-password
   DNS_PASSWORD              Password (the current one for change-password)
   DNS_NEW_PASSWORD          New password for change-password
@@ -29,7 +30,7 @@ const envHelp = `Environment variables:
   DNS_WAIT_TIMEOUT          Wait for the web service to answer (default: 60s, 0 disables)
   DNS_LOG_LEVEL             debug, info, warn or error (default: info)
   DNS_K8S_SECRET_NAME       Kubernetes Secret create-token stores the token in
-  DNS_K8S_SECRET_NAMESPACE  Namespace of that Secret (default: default)
+  DNS_K8S_SECRET_NAMESPACE  Namespace of that Secret (default: the current one)
   DNS_K8S_SECRET_KEY        Key in that Secret (default: api-token)
 `
 

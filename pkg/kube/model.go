@@ -4,22 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
-)
-
-var (
-	k8sClientOnce sync.Once
-	k8sClient     *K8sClient
-	k8sInitErr    error
 )
 
 // ErrTokenNotFound signals that the key exists neither in `.data` nor in `.stringData`.
@@ -28,44 +20,36 @@ var ErrTokenNotFound = fmt.Errorf("token key not found or empty")
 // K8sClient is a thin wrapper around client-go’s Clientset.
 type K8sClient struct {
 	clientset *kubernetes.Clientset
+	namespace string
 }
 
-// NewK8sClient returns a singleton client or panics if the cluster
-// configuration cannot be resolved.
+// NewK8sClient connects the way kubectl does: KUBECONFIG or ~/.kube/config,
+// then the pod's service account when the tool runs in a cluster.
 func NewK8sClient() (*K8sClient, error) {
-	k8sClientOnce.Do(func() {
-		cfg, err := loadKubeConfig()
-		if err != nil {
-			k8sInitErr = fmt.Errorf("cannot build Kubernetes config: %w", err)
-			return
-		}
-
-		cs, err := kubernetes.NewForConfig(cfg)
-		if err != nil {
-			k8sInitErr = fmt.Errorf("cannot create Kubernetes clientset: %w", err)
-			return
-		}
-
-		k8sClient = &K8sClient{clientset: cs}
-	})
-
-	return k8sClient, k8sInitErr
+	return newK8sClient(clientcmd.NewDefaultClientConfigLoadingRules())
 }
 
-// loadKubeConfig tries in-cluster, then falls back to the full kubeconfig-merge
-// logic (KUBECONFIG env, $HOME/.kube/config, etc.).
-func loadKubeConfig() (*rest.Config, error) {
-	// 1. In-cluster
-	if cfg, err := rest.InClusterConfig(); err == nil {
-		return cfg, nil
+func newK8sClient(rules *clientcmd.ClientConfigLoadingRules) (*K8sClient, error) {
+	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{})
+	cfg, err := loader.ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("load Kubernetes config: %w", err)
 	}
+	namespace, _, err := loader.Namespace()
+	if err != nil {
+		return nil, fmt.Errorf("read the current Kubernetes namespace: %w", err)
+	}
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create Kubernetes clientset: %w", err)
+	}
+	return &K8sClient{clientset: cs, namespace: namespace}, nil
+}
 
-	// 2. Kubeconfig loading rules
-	rules := clientcmd.NewDefaultClientConfigLoadingRules() // KUBECONFIG + default path
-	overrides := &clientcmd.ConfigOverrides{}
-	return clientcmd.
-		NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).
-		ClientConfig()
+// Namespace is the current namespace: the kubeconfig context's, else the
+// pod's own in a cluster, else "default".
+func (k *K8sClient) Namespace() string {
+	return k.namespace
 }
 
 // GetSecret fetches a Secret.

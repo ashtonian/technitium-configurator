@@ -15,11 +15,12 @@ import (
 	"github.com/ashtonian/technitium-configurator/v3/pkg/technitium"
 )
 
-// Set at build time with -ldflags "-X main.version=...".
+// Set at build time with -ldflags "-X main.version=..."; cmd.ResolveBuild
+// fills what is left empty.
 var (
-	version   = "dev"
-	commit    = "unknown"
-	buildDate = "unknown"
+	version   string
+	commit    string
+	buildDate string
 )
 
 func main() {
@@ -29,6 +30,7 @@ func main() {
 // run executes the CLI and returns its exit code. Logs and usage errors go to
 // stderr so stdout carries only command output, such as export's YAML.
 func run(args []string, stdout, stderr io.Writer) int {
+	build := cmd.ResolveBuild(cmd.Build{Version: version, Commit: commit, Date: buildDate})
 	logLevel := new(slog.LevelVar)
 	slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel})))
 
@@ -42,7 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmd.Usage(stderr)
 		return 2
 	case inv.Command == cmd.VersionCommand:
-		_, _ = fmt.Fprintf(stdout, "technitium-configurator %s (commit %s, built %s)\n", version, commit, buildDate)
+		_, _ = fmt.Fprintln(stdout, build)
 		return 0
 	}
 
@@ -72,11 +74,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if logLevel.Level() == slog.LevelDebug {
 		slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel, AddSource: true})))
 	}
-	slog.Debug("Starting", "version", version, "commit", commit, "command", inv.Command)
+	slog.Debug("Starting", "version", build.Version, "commit", build.Commit, "command", inv.Command)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := cmd.RunCommand(ctx, cfg, inv.Command, inv.Args); err != nil {
+	if err := cmd.RunCommand(ctx, cfg, inv.Command, inv.Args, stdout); err != nil {
 		slog.Error("Command failed", "error", err, "command", inv.Command)
 		return 1
 	}

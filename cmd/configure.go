@@ -263,11 +263,7 @@ func (a *applier) applyCluster(ctx context.Context, cc *technitium.ClusterConfig
 			return err
 		}
 		a.applied++
-		slog.Info("Cluster options applied",
-			"configRefreshInterval", opts.ConfigRefreshIntervalSecs,
-			"configRetryInterval", opts.ConfigRetryIntervalSecs,
-			"heartbeatRefreshInterval", opts.HeartbeatRefreshIntervalSecs,
-			"heartbeatRetryInterval", opts.HeartbeatRetryIntervalSecs)
+		slog.Info("Cluster options applied", "options", opts)
 	}
 	return nil
 }

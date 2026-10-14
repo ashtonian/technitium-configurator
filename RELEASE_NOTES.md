@@ -1,3 +1,26 @@
+## v3.1.0
+
+Adds a token file for authentication, prints `cluster-state` as YAML on stdout, and stores the `create-token` Secret in the current Kubernetes namespace. The README now starts with runnable examples, real output and recipes. Configs that v3.0.1 applies need no change.
+
+### Changes
+
+- **`DNS_API_TOKEN_FILE`** (`api_token_file`). `configure`, `export` and `cluster-state` read the API token from a file: the one `create-token` writes, or a file holding only the token, such as a mounted Kubernetes Secret or Docker secret. It cannot be set together with `DNS_API_TOKEN`. `create-token` also accepts a token file that holds only the token.
+- **`cluster-state` prints YAML to stdout**, with the server's field names (`clusterInitialized`, `clusterDomain`, `clusterNodes` and the rest). Before, it wrote log lines to stderr; scripts that parsed them need updating.
+- **The token Secret goes in the current namespace.** With `DNS_K8S_SECRET_NAMESPACE` unset, `create-token` uses the namespace `kubectl` would: the kubeconfig context's, else the pod's own, else `default`. Before, it was always `default`, so a Job in another namespace had to set the variable. Kubernetes credentials are found in kubectl's order as well: the kubeconfig first, then the pod's service account.
+
+### Fixes
+
+- **Cluster options log.** `Cluster options applied` lists only the options sent, as `options.<name>=<value>`. It printed `0` for options the file leaves out, which the server keeps unchanged.
+- **Version of `go install` builds.** A binary built with `go install github.com/ashtonian/technitium-configurator/v3@<version>` reports that version, and a build from a checkout reports its module version and commit, instead of `dev (commit unknown, built unknown)`.
+
+### Examples and documentation
+
+- The README leads with a config and the output of applying it twice, then a local Compose walkthrough, the three steps against your own server, starting from `export`, and recipes: DNS-over-TLS forwarders, conditional forwarding, external-dns over RFC 2136, ad blocking, one record of each common type, a read-only user, split files and a two-node cluster. API tokens in a file and in a Kubernetes Secret are documented separately.
+- `examples/docker-compose.yaml` publishes DNS on `127.0.0.1:1053` instead of host port 53, which a local resolver often holds.
+- `examples/cluster/` is a runnable two-node cluster; before, it was a commented-out block.
+- `examples/k8s.yaml` uses `10.0.0.0/8`. The `172.0.0.0/8` it used is not private address space, so the example zone admitted zone transfers and dynamic updates from public addresses. Its resources are named `technitium-configurator`, and re-running the Job is documented, including as an Argo CD sync hook.
+- The unit tests load every DNS config in the README, the Docker Hub overview and `examples/`.
+
 ## v3.0.1
 
 Fixes input that v3.0.0 accepted but the server rejects, which could fail a run after settings or zones had already changed, and app config cases that were accepted with the wrong meaning. Configs that v3.0.0 applied correctly need no change.

@@ -1,0 +1,21 @@
+# Cluster primary: initializes the cluster and holds the whole DNS config.
+cluster:
+  mode: "primary"
+  domain: "dns-cluster.example.com"
+  nodeIPs: "172.28.0.10"
+  configRefreshIntervalSeconds: 60      # how often secondaries pull config (server default 900)
+
+dnsSettings:
+  dnsServerDomain: "primary.dns-cluster.example.com"   # must end with the cluster domain
+
+zones:
+  - zone: "example.com"                 # joins the cluster catalog, so it replicates
+    type: "Primary"
+  - zone: "lab.example.com"
+    type: "Primary"
+    catalog: ""                         # stays on the primary only
+
+records:
+  - domain: "www.example.com"
+    type: "A"
+    ipAddress: "10.0.0.1"

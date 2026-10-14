@@ -3,7 +3,10 @@ package technitium
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"maps"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -27,30 +30,30 @@ const (
 
 // ClusterNode represents a single node in the Technitium DNS cluster
 type ClusterNode struct {
-	ID               int64            `json:"id"`
-	Name             string           `json:"name"`
-	URL              string           `json:"url"`
-	IPAddresses      []string         `json:"ipAddresses"`
-	Type             ClusterNodeType  `json:"type"`
-	State            ClusterNodeState `json:"state"`
-	Version          string           `json:"version"`
-	LastSeen         string           `json:"lastSeen"`
-	UpSince          string           `json:"upSince"`
-	ConfigLastSynced string           `json:"configLastSynced"`
+	ID               int64            `json:"id" yaml:"id"`
+	Name             string           `json:"name" yaml:"name"`
+	URL              string           `json:"url" yaml:"url"`
+	IPAddresses      []string         `json:"ipAddresses" yaml:"ipAddresses"`
+	Type             ClusterNodeType  `json:"type" yaml:"type"`
+	State            ClusterNodeState `json:"state" yaml:"state"`
+	Version          string           `json:"version" yaml:"version"`
+	LastSeen         string           `json:"lastSeen" yaml:"lastSeen"`
+	UpSince          string           `json:"upSince" yaml:"upSince"`
+	ConfigLastSynced string           `json:"configLastSynced" yaml:"configLastSynced"`
 }
 
 // ClusterState represents the current state of the Technitium DNS cluster
 type ClusterState struct {
-	ClusterInitialized           bool          `json:"clusterInitialized"`
-	DnsServerDomain              string        `json:"dnsServerDomain"`
-	Version                      string        `json:"version"`
-	ClusterDomain                string        `json:"clusterDomain"`
-	HeartbeatRefreshIntervalSecs int           `json:"heartbeatRefreshIntervalSeconds"`
-	HeartbeatRetryIntervalSecs   int           `json:"heartbeatRetryIntervalSeconds"`
-	ConfigRefreshIntervalSecs    int           `json:"configRefreshIntervalSeconds"`
-	ConfigRetryIntervalSecs      int           `json:"configRetryIntervalSeconds"`
-	Nodes                        []ClusterNode `json:"clusterNodes"`
-	ServerIpAddresses            []string      `json:"serverIpAddresses"`
+	ClusterInitialized           bool          `json:"clusterInitialized" yaml:"clusterInitialized"`
+	DnsServerDomain              string        `json:"dnsServerDomain" yaml:"dnsServerDomain"`
+	Version                      string        `json:"version" yaml:"version"`
+	ClusterDomain                string        `json:"clusterDomain" yaml:"clusterDomain"`
+	HeartbeatRefreshIntervalSecs int           `json:"heartbeatRefreshIntervalSeconds" yaml:"heartbeatRefreshIntervalSeconds"`
+	HeartbeatRetryIntervalSecs   int           `json:"heartbeatRetryIntervalSeconds" yaml:"heartbeatRetryIntervalSeconds"`
+	ConfigRefreshIntervalSecs    int           `json:"configRefreshIntervalSeconds" yaml:"configRefreshIntervalSeconds"`
+	ConfigRetryIntervalSecs      int           `json:"configRetryIntervalSeconds" yaml:"configRetryIntervalSeconds"`
+	Nodes                        []ClusterNode `json:"clusterNodes" yaml:"clusterNodes"`
+	ServerIpAddresses            []string      `json:"serverIpAddresses" yaml:"serverIpAddresses"`
 }
 
 // Self returns this server's own node entry, if the cluster lists one.
@@ -136,6 +139,17 @@ func (r ClusterOptionsRequest) Check() error {
 // IsEmpty returns true when no timing options have been set.
 func (r ClusterOptionsRequest) IsEmpty() bool {
 	return r == (ClusterOptionsRequest{})
+}
+
+// LogValue logs the options the request sends, under the names the API and
+// the config file give them; options left out are not sent and not logged.
+func (r ClusterOptionsRequest) LogValue() slog.Value {
+	v := r.values()
+	attrs := make([]slog.Attr, 0, len(v))
+	for _, key := range slices.Sorted(maps.Keys(v)) {
+		attrs = append(attrs, slog.String(key, v.Get(key)))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 func (r ClusterOptionsRequest) values() url.Values {

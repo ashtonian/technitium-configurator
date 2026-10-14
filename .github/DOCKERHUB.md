@@ -78,11 +78,11 @@ docker run --rm \
   ashtonian/technitium-configurator:3.0.1 export > dns.yaml
 ```
 
-Create an API token and save it to a file (mount a directory the image's user can write to) or to a Kubernetes Secret:
+The commands above need no API token. To give one to another tool, so that it does not need the password, create it in a mounted directory. Running as your own user lets the image write there:
 
 ```bash
-mkdir -p tokens && chmod 777 tokens
-docker run --rm \
+mkdir -p tokens
+docker run --rm --user "$(id -u):$(id -g)" \
   -e DNS_API_URL="http://dns-server:5380" \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="new-secure-password" \
@@ -91,10 +91,13 @@ docker run --rm \
   ashtonian/technitium-configurator:3.0.1 create-token
 ```
 
+Other commands take it with `-e DNS_API_TOKEN_FILE=/app/tokens/token.yaml` and the same mount. Storing the token in a Kubernetes Secret from inside a cluster is in [API tokens](https://github.com/ashtonian/technitium-configurator#api-tokens).
+
 ## Docker Compose
 
 Start a server and configure it in order: change the password, then apply the config.
 
+<!-- docs-test: not a DNS config -->
 ```yaml
 services:
   dns:
@@ -161,11 +164,12 @@ A two-node cluster example and a Kubernetes Job with RBAC for token storage are 
 |---|---|---|
 | `DNS_API_URL` | (required) | Technitium web service, for example `http://dns-server:5380` |
 | `DNS_API_TOKEN` | | API token; used instead of username and password |
+| `DNS_API_TOKEN_FILE` | | File holding the API token, such as the one `create-token` writes |
 | `DNS_USERNAME`, `DNS_PASSWORD` | | Login, and the current password for `change-password` |
 | `DNS_NEW_PASSWORD` | | New password for `change-password` |
 | `DNS_CONFIG_PATH` | `config.yaml` | DNS config file or directory when `configure` is given no path |
 | `DNS_TOKEN_PATH` | | Token file `create-token` writes (mode `0600`) |
-| `DNS_K8S_SECRET_NAME` | | Kubernetes Secret `create-token` stores the token in |
+| `DNS_K8S_SECRET_NAME` | | Kubernetes Secret `create-token` stores the token in, in the current namespace |
 | `DNS_WAIT_TIMEOUT` | `60s` | How long to wait for the server to answer before starting |
 | `DNS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
@@ -175,7 +179,7 @@ All options, the DNS config schema and troubleshooting are in the [full document
 
 - Built `FROM scratch`: a static binary at `/technitium-configurator` and a CA bundle, nothing else.
 - Runs as user `65532`; the working directory is `/app`, so a relative `config.yaml` resolves to `/app/config.yaml`.
-- Logs go to stderr; stdout carries only command output, such as `export`'s YAML.
+- Logs go to stderr; stdout carries only command output: `export`'s and `cluster-state`'s YAML, and `version`.
 - Exit codes: `0` success or help, `1` failure (every failure is listed), `2` bad command-line usage.
 
 Issues and feature requests: [github.com/ashtonian/technitium-configurator/issues](https://github.com/ashtonian/technitium-configurator/issues)

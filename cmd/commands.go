@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -25,7 +26,9 @@ type Command struct {
 	Description string
 	// MaxArgs is how many arguments the command takes; -1 means any number.
 	MaxArgs int
-	Run     func(ctx context.Context, cfg *technitium.ClientConfig, args []string) error
+	// Run executes the command. Its output, such as export's YAML, goes to
+	// stdout; logs go through slog.
+	Run func(ctx context.Context, cfg *technitium.ClientConfig, args []string, stdout io.Writer) error
 }
 
 // Commands is a map of all available commands
@@ -59,13 +62,14 @@ var Commands = map[string]Command{
 	"cluster-state": {
 		Name:        "cluster-state",
 		Usage:       "cluster-state",
-		Description: "Display the current cluster state",
+		Description: "Print the cluster state as YAML",
 		Run:         runClusterState,
 	},
 }
 
-// RunCommand runs a command that ParseArgs accepted.
-func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command string, args []string) error {
+// RunCommand runs a command that ParseArgs accepted, writing its output to
+// stdout.
+func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command string, args []string, stdout io.Writer) error {
 	cmd, ok := Commands[command]
 	if !ok {
 		return fmt.Errorf("unknown command %q", command)
@@ -73,8 +77,11 @@ func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command strin
 	if err := cfg.Validate(command); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
+	if err := cfg.LoadAPITokenFile(command); err != nil {
+		return err
+	}
 
-	return cmd.Run(ctx, cfg, args)
+	return cmd.Run(ctx, cfg, args, stdout)
 }
 
 // newClient builds an API client and waits for the server to answer.
@@ -107,7 +114,7 @@ func authenticate(ctx context.Context, client *technitium.Client, cfg *technitiu
 	return nil
 }
 
-func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []string, _ io.Writer) error {
 	paths := args
 	if len(paths) == 0 {
 		paths = []string{cfg.ConfigPath}
@@ -154,22 +161,26 @@ func authenticateConfigure(ctx context.Context, client *technitium.Client, cfg *
 	}
 }
 
-func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []string, _ io.Writer) error {
 	client, err := newClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
 
 	var k8s *kube.K8sClient
-	var secretToken, fileToken string
+	var secretNamespace, secretToken, fileToken string
 	if cfg.K8sSecretName != "" {
 		k8s, err = kube.NewK8sClient()
 		if err != nil {
 			return fmt.Errorf("create kubernetes client: %w", err)
 		}
-		secretToken, err = k8s.CheckSecretToken(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey)
+		secretNamespace = cfg.K8sSecretNamespace
+		if secretNamespace == "" {
+			secretNamespace = k8s.Namespace()
+		}
+		secretToken, err = k8s.CheckSecretToken(ctx, secretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey)
 		if err != nil && !kube.NotFound(err) && !kube.TokenNotFound(err) {
-			return fmt.Errorf("read token secret %s/%s: %w", cfg.K8sSecretNamespace, cfg.K8sSecretName, err)
+			return fmt.Errorf("read token secret %s/%s: %w", secretNamespace, cfg.K8sSecretName, err)
 		}
 	}
 	if cfg.TokenPath != "" {
@@ -214,10 +225,10 @@ func runCreateToken(ctx context.Context, cfg *technitium.ClientConfig, args []st
 	}
 
 	if k8s != nil && secretToken != token {
-		if err := k8s.CreateOrUpdateSecret(ctx, cfg.K8sSecretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey, token); err != nil {
-			return fmt.Errorf("save API token to secret %s/%s: %w", cfg.K8sSecretNamespace, cfg.K8sSecretName, err)
+		if err := k8s.CreateOrUpdateSecret(ctx, secretNamespace, cfg.K8sSecretName, cfg.K8sSecretKey, token); err != nil {
+			return fmt.Errorf("save API token to secret %s/%s: %w", secretNamespace, cfg.K8sSecretName, err)
 		}
-		slog.Info("Saved API token to Kubernetes secret", "namespace", cfg.K8sSecretNamespace, "name", cfg.K8sSecretName)
+		slog.Info("Saved API token to Kubernetes secret", "namespace", secretNamespace, "name", cfg.K8sSecretName)
 	}
 	if cfg.TokenPath != "" && fileToken != token {
 		rec := technitium.CreateTokenResponse{Username: cfg.Username, TokenName: tokenName, Token: token}
@@ -237,11 +248,11 @@ func readTokenFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read token file: %w", err)
 	}
-	var rec technitium.CreateTokenResponse
-	if err := yaml.Unmarshal(data, &rec); err != nil {
+	token, err := technitium.ParseTokenFile(data)
+	if err != nil {
 		return "", fmt.Errorf("parse token file %s: %w", path, err)
 	}
-	return rec.Token, nil
+	return token, nil
 }
 
 // writeTokenFile replaces path atomically with a 0600 file.
@@ -295,7 +306,7 @@ func replaceFile(path string, data []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-func runExport(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+func runExport(ctx context.Context, cfg *technitium.ClientConfig, args []string, stdout io.Writer) error {
 	client, err := newClient(ctx, cfg)
 	if err != nil {
 		return err
@@ -316,7 +327,7 @@ func runExport(ctx context.Context, cfg *technitium.ClientConfig, args []string)
 		return fmt.Errorf("the export does not load as a config, so it was not written: %w", err)
 	}
 	if len(args) == 0 {
-		_, err := os.Stdout.Write(out)
+		_, err := stdout.Write(out)
 		return err
 	}
 	if err := writeFilePrivate(args[0], out); err != nil {
@@ -359,7 +370,7 @@ func modeOf(info os.FileInfo) os.FileMode {
 	return info.Mode().Perm()
 }
 
-func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args []string, _ io.Writer) error {
 	client, err := newClient(ctx, cfg)
 	if err != nil {
 		return err
@@ -382,7 +393,7 @@ func runChangePassword(ctx context.Context, cfg *technitium.ClientConfig, args [
 	return nil
 }
 
-func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []string) error {
+func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []string, stdout io.Writer) error {
 	client, err := newClient(ctx, cfg)
 	if err != nil {
 		return err
@@ -395,26 +406,10 @@ func runClusterState(ctx context.Context, cfg *technitium.ClientConfig, args []s
 	if err != nil {
 		return err
 	}
-
-	slog.Info("Cluster state",
-		"initialized", state.ClusterInitialized,
-		"domain", state.ClusterDomain,
-		"version", state.Version,
-		"nodes", len(state.Nodes))
-
-	for _, n := range state.Nodes {
-		slog.Info("Cluster node",
-			"id", n.ID,
-			"name", n.Name,
-			"type", n.Type,
-			"state", n.State,
-			"version", n.Version,
-			"url", n.URL,
-			"ipAddresses", n.IPAddresses,
-			"lastSeen", n.LastSeen,
-			"upSince", n.UpSince,
-			"configLastSynced", n.ConfigLastSynced)
+	enc := yaml.NewEncoder(stdout)
+	enc.SetIndent(2) // as export writes YAML
+	if err := enc.Encode(state); err != nil {
+		return fmt.Errorf("write cluster state: %w", err)
 	}
-
-	return nil
+	return enc.Close()
 }

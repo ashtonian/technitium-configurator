@@ -3,8 +3,10 @@ package cmd
 import (
 	"bytes"
 	"flag"
+	"reflect"
 	"testing"
 
+	"github.com/ashtonian/technitium-configurator/v3/pkg/technitium"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,7 +69,13 @@ func TestUsageListsEveryCommandAndFlag(t *testing.T) {
 	for name := range Commands {
 		assert.Contains(t, out.String(), Commands[name].Usage)
 	}
-	for _, want := range []string{"version", "-config", "-token-path", "-log-level", "DNS_API_URL"} {
+	for _, want := range []string{"version", "-config", "-token-path", "-log-level"} {
 		assert.Contains(t, out.String(), want)
+	}
+	fields := reflect.TypeOf(technitium.ClientConfig{})
+	for i := range fields.NumField() {
+		if env := fields.Field(i).Tag.Get("env"); env != "" {
+			assert.Contains(t, out.String(), env)
+		}
 	}
 }
