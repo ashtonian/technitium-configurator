@@ -23,7 +23,7 @@ x-dns-server: &dns-server
     start_period: 10s
 
 x-configurator: &configurator
-  image: ashtonian/technitium-configurator:3.0.1
+  image: ashtonian/technitium-configurator:3.1.0
   command: configure /app/config.yaml
   networks:
     - cluster
