@@ -11,7 +11,7 @@ Source, full documentation and examples: **[github.com/ashtonian/technitium-conf
 | Tag | What it is |
 |---|---|
 | `latest` | The newest stable release |
-| `X.Y.Z`, `vX.Y.Z` | A release, for example `3.0.1` |
+| `X.Y.Z`, `vX.Y.Z` | A release, for example `3.1.0` |
 | `X.Y.Z-rc.N` | Release candidates; `latest` never points to one |
 | `beta`, `beta-<date>-<sha>` | Builds of the `main` branch |
 
@@ -38,7 +38,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="admin" \
   -e DNS_NEW_PASSWORD="new-secure-password" \
-  ashtonian/technitium-configurator:3.0.1 change-password
+  ashtonian/technitium-configurator:3.1.0 change-password
 ```
 
 Write a DNS config:
@@ -65,7 +65,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="new-secure-password" \
   -v "$(pwd)/dns:/app/dns:ro" \
-  ashtonian/technitium-configurator:3.0.1 configure /app/dns
+  ashtonian/technitium-configurator:3.1.0 configure /app/dns
 ```
 
 Export a running server:
@@ -75,7 +75,7 @@ docker run --rm \
   -e DNS_API_URL="http://dns-server:5380" \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="new-secure-password" \
-  ashtonian/technitium-configurator:3.0.1 export > dns.yaml
+  ashtonian/technitium-configurator:3.1.0 export > dns.yaml
 ```
 
 The commands above need no API token. To give one to another tool, so that it does not need the password, create it in a mounted directory. Running as your own user lets the image write there:
@@ -88,7 +88,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -e DNS_PASSWORD="new-secure-password" \
   -e DNS_TOKEN_PATH="/app/tokens/token.yaml" \
   -v "$(pwd)/tokens:/app/tokens" \
-  ashtonian/technitium-configurator:3.0.1 create-token
+  ashtonian/technitium-configurator:3.1.0 create-token
 ```
 
 Other commands take it with `-e DNS_API_TOKEN_FILE=/app/tokens/token.yaml` and the same mount. Storing the token in a Kubernetes Secret from inside a cluster is in [API tokens](https://github.com/ashtonian/technitium-configurator#api-tokens).
@@ -117,7 +117,7 @@ services:
       retries: 6
 
   configurator-password:
-    image: ashtonian/technitium-configurator:3.0.1
+    image: ashtonian/technitium-configurator:3.1.0
     environment:
       - DNS_API_URL=http://dns:5380
       - DNS_USERNAME=admin
@@ -129,7 +129,7 @@ services:
     command: change-password
 
   configurator-configure:
-    image: ashtonian/technitium-configurator:3.0.1
+    image: ashtonian/technitium-configurator:3.1.0
     environment:
       - DNS_API_URL=http://dns:5380
       - DNS_USERNAME=admin

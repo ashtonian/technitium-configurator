@@ -38,7 +38,7 @@ services:
       start_period: 10s
 
   configurator-password:
-    image: ashtonian/technitium-configurator:3.0.1
+    image: ashtonian/technitium-configurator:3.1.0
     environment:
       - DNS_API_URL=http://dns:5380
       - DNS_USERNAME=admin
@@ -50,7 +50,7 @@ services:
     command: change-password
 
   configurator-configure:
-    image: ashtonian/technitium-configurator:3.0.1
+    image: ashtonian/technitium-configurator:3.1.0
     environment:
       - DNS_API_URL=http://dns:5380
       - DNS_USERNAME=admin

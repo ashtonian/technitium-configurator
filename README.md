@@ -127,7 +127,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="admin" \
   -e DNS_NEW_PASSWORD="new-secure-password" \
-  ashtonian/technitium-configurator:3.0.1 change-password
+  ashtonian/technitium-configurator:3.1.0 change-password
 ```
 
 ```console
@@ -148,7 +148,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="new-secure-password" \
   -v "$(pwd)/dns:/app/dns:ro" \
-  ashtonian/technitium-configurator:3.0.1 configure /app/dns
+  ashtonian/technitium-configurator:3.1.0 configure /app/dns
 ```
 
 `configure` takes files and directories; a directory means its `*.yaml` and `*.yml` files. The whole input is checked before anything changes, so a mistake stops the run with the server untouched:
@@ -170,7 +170,7 @@ docker run --rm \
   -e DNS_API_URL="http://dns-server:5380" \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="new-secure-password" \
-  ashtonian/technitium-configurator:3.0.1 export > dns/config.yaml
+  ashtonian/technitium-configurator:3.1.0 export > dns/config.yaml
 ```
 
 ```yaml
@@ -504,7 +504,7 @@ Settings, cluster, administration, zones (catalog zones first), FWD records, app
 ### Docker
 
 ```bash
-docker pull ashtonian/technitium-configurator:3.0.1
+docker pull ashtonian/technitium-configurator:3.1.0
 ```
 
 Images are published for `linux/amd64` and `linux/arm64`. The image is built `FROM scratch` with a CA bundle and the static binary at `/technitium-configurator`. It runs as user `65532`, so a host directory the tool writes to must be writable by that user, or pass `--user "$(id -u):$(id -g)"`. Its working directory is `/app`, so a relative `config.yaml` resolves to `/app/config.yaml`.
@@ -524,7 +524,7 @@ Images are published for `linux/amd64` and `linux/arm64`. The image is built `FR
 ### Without Docker
 
 ```bash
-go install github.com/ashtonian/technitium-configurator/v3@v3.0.1
+go install github.com/ashtonian/technitium-configurator/v3@v3.1.0
 ```
 
 Needs Go 1.26 or later. The binary takes the same commands, flags and environment variables as the image.
@@ -547,7 +547,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -e DNS_PASSWORD="new-secure-password" \
   -e DNS_TOKEN_PATH="/app/tokens/token.yaml" \
   -v "$(pwd)/tokens:/app/tokens" \
-  ashtonian/technitium-configurator:3.0.1 create-token
+  ashtonian/technitium-configurator:3.1.0 create-token
 ```
 
 ```console
@@ -572,7 +572,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -e DNS_API_TOKEN_FILE="/app/tokens/token.yaml" \
   -v "$(pwd)/tokens:/app/tokens:ro" \
   -v "$(pwd)/dns:/app/dns:ro" \
-  ashtonian/technitium-configurator:3.0.1 configure /app/dns
+  ashtonian/technitium-configurator:3.1.0 configure /app/dns
 ```
 
 `DNS_API_TOKEN_FILE` also takes a file holding only the token, as a Kubernetes Secret or Docker secret mounted as a file holds it.
