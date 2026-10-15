@@ -28,6 +28,16 @@ const notDNSConfig = "<!-- docs-test: not a DNS config -->"
 func TestDocumentedConfigsLoad(t *testing.T) {
 	var sources []Source
 	for _, doc := range []string{"README.md", ".github/DOCKERHUB.md"} {
+		blocks := markdownYAMLBlocks(t, doc)
+		require.NotEmpty(t, blocks, "%s has no yaml blocks", doc)
+		sources = append(sources, blocks...)
+	}
+	guides, err := filepath.Glob(filepath.Join(repoRoot, "docs", "*.md"))
+	require.NoError(t, err)
+	require.NotEmpty(t, guides, "docs has no Markdown guides")
+	for _, guide := range guides {
+		doc, err := filepath.Rel(repoRoot, guide)
+		require.NoError(t, err)
 		sources = append(sources, markdownYAMLBlocks(t, doc)...)
 	}
 	for _, file := range []string{
@@ -89,7 +99,6 @@ func markdownYAMLBlocks(t *testing.T, doc string) []Source {
 	}
 	require.NoError(t, scanner.Err())
 	require.Nil(t, current, "%s: unterminated yaml block starting at line %d", doc, start)
-	require.NotEmpty(t, blocks, "%s has no yaml blocks", doc)
 	return blocks
 }
 

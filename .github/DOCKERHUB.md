@@ -173,7 +173,7 @@ A two-node cluster example and a Kubernetes Job with RBAC for token storage are 
 | `DNS_WAIT_TIMEOUT` | `60s` | How long to wait for the server to answer before starting |
 | `DNS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
-All options, the DNS config schema and troubleshooting are in the [full documentation](https://github.com/ashtonian/technitium-configurator#readme).
+All options, the DNS config schema and troubleshooting are in the [full documentation](https://github.com/ashtonian/technitium-configurator/tree/main/docs#readme).
 
 ## Image details
 

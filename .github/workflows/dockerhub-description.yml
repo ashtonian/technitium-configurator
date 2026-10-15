@@ -1,7 +1,7 @@
 name: Docker Hub description
 
-# Publishes .github/DOCKERHUB.md as the Docker Hub overview. The README is
-# too long for Docker Hub's 25,000-byte limit and uses relative links.
+# Publishes .github/DOCKERHUB.md as the Docker Hub overview, with absolute
+# links to the full documentation. The repository README uses relative links.
 on:
   push:
     branches: [ main ]
