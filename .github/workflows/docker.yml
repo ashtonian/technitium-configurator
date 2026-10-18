@@ -84,9 +84,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -164,16 +161,7 @@ jobs:
           else
             expected="${VERSION:-dev}"
           fi
-          for arch in amd64 arm64; do
-            bin="out/linux_${arch}/technitium-configurator"
-            case "$arch" in
-              amd64) want="x86-64" ;;
-              arm64) want="aarch64" ;;
-            esac
-            file "$bin" | tee /dev/stderr | grep -q "$want"
-            # arm64 runs under the QEMU emulator set up above.
-            "$bin" version | tee /dev/stderr | grep -qF "technitium-configurator ${expected} "
-          done
+          scripts/verify-binaries.sh out "$expected"
 
       - name: Build and push
         uses: docker/build-push-action@v7
