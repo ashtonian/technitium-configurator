@@ -5,11 +5,6 @@ ARG GO_IMAGE=golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f
 # Cross-compiles on the build platform for each target platform.
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 # Automatic platform args are global; a stage must redeclare them to use them.
-ARG TARGETOS
-ARG TARGETARCH
-ARG VERSION=dev
-ARG REVISION=unknown
-ARG BUILD_DATE=unknown
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -17,13 +12,19 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY main.go ./
 COPY cmd ./cmd
 COPY pkg ./pkg
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG BUILD_DATE=unknown
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     test -n "$TARGETOS" && test -n "$TARGETARCH" && \
     GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
     go build -mod=readonly -trimpath -buildvcs=false \
       -ldflags="-s -w -buildid= -X main.version=${VERSION:-dev} -X main.commit=${REVISION:-unknown} -X main.buildDate=${BUILD_DATE:-unknown}" \
-      -o /out/technitium-configurator .
+      -o /out/technitium-configurator . && \
+    find /root/.cache/go-build -type f -mmin +120 -delete
 
 FROM scratch
 ARG VERSION=dev

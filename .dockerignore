@@ -6,3 +6,5 @@
 !main.go
 !cmd/
 !pkg/
+
+.build-cache/

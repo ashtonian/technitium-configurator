@@ -1,0 +1,14 @@
+name: Trim Go build cache
+description: Drop old build objects before the successful job's cache post-save.
+
+runs:
+  using: composite
+  steps:
+    - name: Trim unused Go build objects
+      shell: bash
+      run: |
+        cache_dir=$(go env GOCACHE)
+        if [ -d "$cache_dir" ]; then
+          # Go refreshes used objects' mtimes at most once an hour.
+          find "$cache_dir" -type f -mmin +120 -delete
+        fi

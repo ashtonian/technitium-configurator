@@ -15,7 +15,8 @@ permissions:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-technitium-configurator
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
