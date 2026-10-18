@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: ./.github/actions/setup-go-cache
+        uses: ashtonian/go-ci-actions@853832a13eec9e84695a009516a948fca3ce0e9d # v1.0.0
         with:
           go-version-file: go.mod
 
@@ -47,9 +47,6 @@ jobs:
 
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-      - name: Trim Go build cache
-        uses: ./.github/actions/trim-go-cache
-
   e2e:
     # Runs the configurator against real Technitium servers (single node and
     # a two-node cluster) pinned in e2e/docker-compose*.yaml.
@@ -63,15 +60,12 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: ./.github/actions/setup-go-cache
+        uses: ashtonian/go-ci-actions@853832a13eec9e84695a009516a948fca3ce0e9d # v1.0.0
         with:
           go-version-file: go.mod
 
       - name: End-to-end tests
         run: go test -tags e2e -v -count=1 -timeout 20m ./e2e/...
-      - name: Trim Go build cache
-        uses: ./.github/actions/trim-go-cache
-
   build-and-push:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-technitium-configurator
