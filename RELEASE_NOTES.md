@@ -55,7 +55,7 @@ v3 targets Technitium DNS Server v15.6.0 and later and makes `configure` a depen
   - `reverseProxyNetworkACL` → `dnsReverseProxyNetworkACL`
   - `qpmLimitRequests`, `qpmLimitErrors` → `qpmPrefixLimitsIPv4`, `qpmPrefixLimitsIPv6`
   - `cachePrefetchSample*` → `enableCachePrefetch`, `cachePrefetchTrigger`
-- **Values the server used to accept or ignore are now errors.** Examples include zone ACL options it silently ignored, TSIG secrets that are not base64, malformed endpoints and forwarders, and TTLs above 2147483647. The error names the file and the field.
+- **Values are validated before any API call.** Examples include zone ACL options that have no effect, TSIG secrets that are not base64, malformed endpoints and forwarders, and TTLs above 2147483647. The error names the file and the field.
 - **Record `overwrite` is replaced by `recordPolicy`.** Use `recordPolicy: replace` on the record, its zone or the whole file.
 - **Client config and DNS config are separate files.** `--config` (or the new `DNS_CLIENT_CONFIG`) names a client config file holding connection and login settings only, as a single YAML document. It has no default, and a file named there must exist. The DNS config is the argument to `configure`, or `DNS_CONFIG_PATH`, or the new `config_path` key, then `config.yaml`.
 - **Flags go after the command:** `technitium-configurator configure --log-level debug dns.yaml`.
