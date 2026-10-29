@@ -21,6 +21,7 @@ jobs:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-technitium-configurator
     permissions:
+      id-token: write
       contents: read
     steps:
       - name: Checkout repository
@@ -29,7 +30,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
+        uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
         with:
           go-version-file: go.mod
 
@@ -56,6 +57,7 @@ jobs:
     runs-on: arc-technitium-configurator
     needs: test
     permissions:
+      id-token: write
       contents: read
     steps:
       - name: Checkout repository
@@ -64,7 +66,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
+        uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
         with:
           go-version-file: go.mod
 
