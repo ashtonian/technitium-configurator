@@ -81,7 +81,7 @@ type ZoneConfig struct {
 type ClusterConfig struct {
 	Mode             string `yaml:"mode"`                       // "primary" or "secondary"
 	Domain           string `yaml:"domain,omitempty"`           // cluster domain name
-	NodeIPs          string `yaml:"nodeIPs"`                    // this node's IP(s), comma-separated
+	NodeIPs          string `yaml:"nodeIPs"`                    // comma-separated addresses, or auto for the server's interfaces
 	PrimaryURL       string `yaml:"primaryURL,omitempty"`       // primary node URL (secondary only)
 	PrimaryIP        string `yaml:"primaryIP,omitempty"`        // primary node IP (secondary, optional)
 	PrimaryUsername  string `yaml:"primaryUsername,omitempty"`  // primary node credentials (secondary only)

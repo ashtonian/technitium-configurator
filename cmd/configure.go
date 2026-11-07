@@ -61,6 +61,17 @@ func (a *applier) run(ctx context.Context) error {
 	if err := a.checkClusterOptions(ctx); err != nil {
 		return err
 	}
+	if cc := a.desired.Cluster; cc != nil && cc.NodeIPs == "auto" {
+		state, err := a.cluster(ctx)
+		if err != nil {
+			return err
+		}
+		ips, err := cc.ResolveNodeIPs(state)
+		if err != nil {
+			return err
+		}
+		cc.NodeIPs = strings.Join(ips, ",")
+	}
 	// Settings come before the cluster: cluster init adds its own TSIG key,
 	// and a later settings call that omitted it would be rejected.
 	if err := a.applySettings(ctx); err != nil {

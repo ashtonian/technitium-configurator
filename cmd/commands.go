@@ -33,6 +33,13 @@ type Command struct {
 
 // Commands is a map of all available commands
 var Commands = map[string]Command{
+	"reconcile": {
+		Name:        "reconcile",
+		Usage:       "reconcile [path...]",
+		Description: "Continuously reload and apply DNS config with bounded passes",
+		MaxArgs:     -1,
+		Run:         runReconcile,
+	},
 	"configure": {
 		Name:        "configure",
 		Usage:       "configure [path...]",
@@ -77,8 +84,10 @@ func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command strin
 	if err := cfg.Validate(command); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
-	if err := cfg.LoadAPITokenFile(command); err != nil {
-		return err
+	if command != "reconcile" {
+		if err := cfg.LoadAPITokenFile(command); err != nil {
+			return err
+		}
 	}
 
 	return cmd.Run(ctx, cfg, args, stdout)
@@ -92,6 +101,7 @@ func newClient(ctx context.Context, cfg *technitium.ClientConfig) (*technitium.C
 	}
 	if cfg.WaitTimeout > 0 {
 		if err := client.WaitReady(ctx, cfg.WaitTimeout, 2*time.Second); err != nil {
+			_ = client.Close(ctx)
 			return nil, err
 		}
 	}
@@ -128,11 +138,22 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 	if err != nil {
 		return err
 	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.Timeout)
+		defer cancel()
+		if err := client.Close(cleanup); err != nil {
+			slog.Warn("Close configuration session", "error", err)
+		}
+	}()
 	if err := authenticateConfigure(ctx, client, cfg, desired.Cluster); err != nil {
 		return err
 	}
 
-	a := &applier{client: client, cfg: cfg, desired: desired}
+	authenticated := *cfg
+	if authenticated.NewPassword != "" && authenticated.APIToken == "" {
+		authenticated.Password = authenticated.NewPassword
+	}
+	a := &applier{client: client, cfg: &authenticated, desired: desired}
 	return a.run(ctx)
 }
 
@@ -142,6 +163,18 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 // credentials from the cluster section are tried. A one-time password
 // cannot be reused on later runs, so that user must not need one.
 func authenticateConfigure(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig, cc *technitium.ClusterConfig) error {
+	if cfg.NewPassword != "" && cfg.APIToken == "" {
+		if err := client.Login(ctx, cfg.Username, cfg.NewPassword, ""); err == nil {
+			return nil
+		}
+		if err := client.Login(ctx, cfg.Username, cfg.Password, ""); err != nil {
+			return fmt.Errorf("bootstrap login as %q: %w", cfg.Username, err)
+		}
+		if err := client.ChangePassword(ctx, cfg.Password, cfg.NewPassword); err != nil {
+			return err
+		}
+		return client.Login(ctx, cfg.Username, cfg.NewPassword, "")
+	}
 	err := authenticate(ctx, client, cfg)
 	if err == nil || cc == nil || cc.Mode != "secondary" || cc.PrimaryPassword == "" {
 		return err

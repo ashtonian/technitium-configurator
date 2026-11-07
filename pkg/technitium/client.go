@@ -20,9 +20,10 @@ const maxResponseBytes = 64 << 20
 // Client is a Technitium DNS Server HTTP API client. It does not
 // authenticate on construction; call Login or SetToken first.
 type Client struct {
-	base  string
-	token string
-	hc    *http.Client
+	base         string
+	token        string
+	ownedSession bool
+	hc           *http.Client
 }
 
 // NewClient returns a client for cfg.APIURL.
@@ -56,7 +57,21 @@ func NewClient(cfg *ClientConfig) (*Client, error) {
 }
 
 // SetToken sets the session or API token sent with every request.
-func (c *Client) SetToken(token string) { c.token = token }
+func (c *Client) SetToken(token string) {
+	c.token = token
+	c.ownedSession = false
+}
+
+// Close releases a login session without revoking a caller's API token.
+func (c *Client) Close(ctx context.Context) error {
+	defer c.hc.CloseIdleConnections()
+	if !c.ownedSession {
+		return nil
+	}
+	_, err := c.postForm(ctx, "/api/user/logout", nil)
+	c.token, c.ownedSession = "", false
+	return err
+}
 
 // Token returns the current session or API token.
 func (c *Client) Token() string { return c.token }
@@ -303,6 +318,7 @@ func (c *Client) Login(ctx context.Context, username, password, totp string) err
 		return fmt.Errorf("%s: response contained no token", path)
 	}
 	c.token = resp.Token
+	c.ownedSession = true
 	return nil
 }
 

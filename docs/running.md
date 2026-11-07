@@ -10,7 +10,7 @@
 ## Docker
 
 ```bash
-docker pull ashtonian/technitium-configurator:3.1.0
+docker pull ashtonian/technitium-configurator:3.2.0
 ```
 
 Images are published for `linux/amd64` and `linux/arm64`. The image is built `FROM scratch` with a CA bundle and the static binary at `/technitium-configurator`. It runs as user `65532`, so a host directory the tool writes to must be writable by that user, or pass `--user "$(id -u):$(id -g)"`. Its working directory is `/app`, so a relative `config.yaml` resolves to `/app/config.yaml`.
@@ -30,7 +30,7 @@ Images are published for `linux/amd64` and `linux/arm64`. The image is built `FR
 ## Without Docker
 
 ```bash
-go install github.com/ashtonian/technitium-configurator/v3@v3.1.0
+go install github.com/ashtonian/technitium-configurator/v3@v3.2.0
 ```
 
 Needs Go 1.26 or later. The binary takes the same commands, flags and environment variables as the image.

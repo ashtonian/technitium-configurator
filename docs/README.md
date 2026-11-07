@@ -22,6 +22,7 @@ Requires **Technitium DNS Server v15.6.0 or later**; see [Compatibility](compati
 
 - [Set up a server or use an existing one](getting-started.md): local Compose demo, password setup and applying a config.
 - [Deployment](running.md): Docker, Compose, Kubernetes Jobs and native installation.
+- [Continuous reconciliation](reconciliation.md): configuration reload, bounded retries, first boot and sidecars.
 - [API tokens](api-tokens.md): create and reuse a token file or Kubernetes Secret.
 - [Export and restore](export.md): start from a running server and prepare an export for a fresh one.
 

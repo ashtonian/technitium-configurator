@@ -5,11 +5,32 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 )
+
+// ResolveNodeIPs uses the target server's interfaces, never the client's.
+func (cc *ClusterConfig) ResolveNodeIPs(state *ClusterState) ([]string, error) {
+	if cc.NodeIPs != "auto" {
+		return cc.NodeIPList(), nil
+	}
+	ips := make([]string, 0, len(state.ServerIpAddresses))
+	for _, raw := range state.ServerIpAddresses {
+		ip, err := netip.ParseAddr(raw)
+		if err != nil || !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.Zone() != "" {
+			return nil, fmt.Errorf("cluster.nodeIPs: server reported an unusable address %q", raw)
+		}
+		ips = append(ips, ip.Unmap().String())
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("cluster.nodeIPs: server reported no usable interface addresses")
+	}
+	slices.Sort(ips)
+	return slices.Compact(ips), nil
+}
 
 // ClusterNodeType represents the type of a cluster node
 type ClusterNodeType string

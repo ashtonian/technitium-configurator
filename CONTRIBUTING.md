@@ -29,6 +29,14 @@ GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on 
 
 ## Code map
 
+The cluster suite runs both literal and discovered-address configurations. Its
+discovery case replaces a member's advertised address with an incorrect one,
+observes the native catalog ACL, restores the discovered address and checks
+subsequent record replication. The single-node suite also exercises first-boot
+password setup, mounted-config reload, recovery from invalid configuration and
+signal-driven reconciliation shutdown. Unit coverage uses an injected wait
+and virtual time for retry/deadline behavior.
+
 | Path | Contents |
 |---|---|
 | `main.go` | CLI entry: client configuration precedence, logging, signal handling, exit codes, `version` output |
@@ -36,6 +44,7 @@ GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on 
 | `cmd/commands.go` | Commands: `configure` entry, `create-token`, `change-password`, `export`, `cluster-state`; authentication |
 | `cmd/version.go` | What `version` prints: `-ldflags` values, completed from the module version and commit Go records in the binary |
 | `cmd/configure.go` | One configure pass: checks before any change, then settings, cluster, administration, zones, FWD records, apps, other records |
+| `cmd/reconcile.go` | Bounded passes using configure, mounted configuration/token reload, retries and cancellation |
 | `pkg/technitium/client.go`, `errors.go`, `logging.go` | HTTP client, response envelope, typed errors, request logging |
 | `pkg/technitium/config.go`, `validate.go` | DNS config schema, multi-file loading and merging, validation |
 | `pkg/technitium/plan.go` | Decisions without I/O: catalogs, ACL overrides, record placement and plans, TSIG merging |
