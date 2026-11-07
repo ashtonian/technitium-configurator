@@ -38,7 +38,9 @@ subsequent record replication. A real UDP NOTIFY regression verifies refusal
 of an unrecognized sender, acceptance through an explicit trusted-network
 policy and refusal again after that policy is cleared. The single-node suite also exercises first-boot
 password setup, mounted-config reload, recovery from invalid configuration and
-signal-driven reconciliation shutdown. Unit coverage uses an injected wait
+signal-driven reconciliation shutdown. A cold-start app test uses the canonical
+Advanced Blocking example, a persistent server volume and real UDP/TCP query
+results, checking both the app's blocking report and an allowed persisted record. Unit coverage uses an injected wait
 and virtual time for retry/deadline behavior.
 
 | Path | Contents |
