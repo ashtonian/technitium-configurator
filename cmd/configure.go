@@ -20,9 +20,10 @@ import (
 // finding one already there is a skip, not a failure. Anything else that
 // fails is collected, the run continues, and the command exits non-zero.
 type applier struct {
-	client  *technitium.Client
-	cfg     *technitium.ClientConfig
-	desired *technitium.Config
+	client            *technitium.Client
+	cfg               *technitium.ClientConfig
+	desired           *technitium.Config
+	bootstrapPassword bool
 
 	created, applied, unchanged, conflicts int
 	failures                               []string
@@ -71,6 +72,15 @@ func (a *applier) run(ctx context.Context) error {
 			return err
 		}
 		cc.NodeIPs = strings.Join(ips, ",")
+	}
+	if a.bootstrapPassword {
+		if err := a.client.ChangePassword(ctx, a.cfg.Password, a.cfg.NewPassword); err != nil {
+			return err
+		}
+		if err := a.client.Login(ctx, a.cfg.Username, a.cfg.NewPassword, ""); err != nil {
+			return err
+		}
+		a.cfg.Password = a.cfg.NewPassword
 	}
 	// Settings come before the cluster: cluster init adds its own TSIG key,
 	// and a later settings call that omitted it would be rejected.

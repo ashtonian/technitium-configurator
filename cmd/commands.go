@@ -150,30 +150,32 @@ func configurePass(ctx context.Context, cfg *technitium.ClientConfig, args []str
 		}
 	}()
 	authenticated := *cfg
+	changePassword := false
 	if bootstrapPassword && authenticated.NewPassword != "" && authenticated.APIToken == "" {
-		if err := authenticateBootstrap(ctx, client, cfg); err != nil {
+		var err error
+		changePassword, err = authenticateBootstrap(ctx, client, cfg)
+		if err != nil {
 			return err
 		}
-		authenticated.Password = authenticated.NewPassword
+		if !changePassword {
+			authenticated.Password = authenticated.NewPassword
+		}
 	} else if err := authenticateConfigure(ctx, client, cfg, desired.Cluster); err != nil {
 		return err
 	}
-	a := &applier{client: client, cfg: &authenticated, desired: desired}
+	a := &applier{client: client, cfg: &authenticated, desired: desired, bootstrapPassword: changePassword}
 	return a.run(ctx)
 }
 
 // authenticateBootstrap is opt-in password setup for continuous reconciliation.
-func authenticateBootstrap(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig) error {
+func authenticateBootstrap(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig) (bool, error) {
 	if err := client.Login(ctx, cfg.Username, cfg.NewPassword, ""); err == nil {
-		return nil
+		return false, nil
 	}
 	if err := client.Login(ctx, cfg.Username, cfg.Password, ""); err != nil {
-		return fmt.Errorf("bootstrap login as %q: %w", cfg.Username, err)
+		return false, fmt.Errorf("bootstrap login as %q: %w", cfg.Username, err)
 	}
-	if err := client.ChangePassword(ctx, cfg.Password, cfg.NewPassword); err != nil {
-		return err
-	}
-	return client.Login(ctx, cfg.Username, cfg.NewPassword, "")
+	return true, nil
 }
 
 // authenticateConfigure logs in for configure. Joining a cluster replaces a
