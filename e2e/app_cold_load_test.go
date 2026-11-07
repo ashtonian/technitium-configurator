@@ -44,7 +44,7 @@ func TestE2EBlockingColdLoad(t *testing.T) {
 	if err := yaml.Unmarshal(data, &example); err != nil {
 		t.Fatal(err)
 	}
-	const blocked = "blocked.cold-load.invalid"
+	const blocked = "example.com"
 	var app any
 	for _, candidate := range example.Apps {
 		if candidate.Name != "Advanced Blocking" {
