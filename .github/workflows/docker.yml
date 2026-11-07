@@ -51,6 +51,7 @@ jobs:
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
   e2e:
+    name: e2e (Technitium ${{ matrix.server }})
     # Exercise standalone and clustered servers on both supported patch versions.
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-technitium-configurator
