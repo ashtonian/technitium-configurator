@@ -231,6 +231,7 @@ func TestE2EReconcileBootstrap(t *testing.T) {
 func testE2ECluster(t *testing.T, bin, mode string) {
 	primaryPort := freePort(t)
 	secondaryPort := freePort(t)
+	secondaryDNSPort := freeUDPPort(t)
 	primaryAPIURL := fmt.Sprintf("http://127.0.0.1:%d", primaryPort)
 	secondaryAPIURL := fmt.Sprintf("http://127.0.0.1:%d", secondaryPort)
 
@@ -242,7 +243,7 @@ func testE2ECluster(t *testing.T, bin, mode string) {
 		forwarderZone = "forwarded.local"
 	)
 
-	startCluster(t, primaryPort, secondaryPort)
+	startCluster(t, primaryPort, secondaryPort, secondaryDNSPort)
 	waitForHealth(t, primaryAPIURL+"/api/status", 60*time.Second)
 	waitForHealth(t, secondaryAPIURL+"/api/status", 60*time.Second)
 
@@ -706,6 +707,11 @@ apps:
 	if !strings.Contains(out, "Logged in with the primary's credentials") {
 		t.Errorf("a stale token on the secondary did not fall back to the primary's credentials:\n%s", out)
 	}
+	if mode == "automatic" {
+		t.Run("notify-source-policy", func(t *testing.T) {
+			testNotifySourcePolicy(t, bin, secondaryAPIURL, secondaryDNSPort, clusterZone)
+		})
+	}
 }
 
 func waitCatalogAddress(t *testing.T, apiURL, token, clusterDomain, address string) {
@@ -904,7 +910,7 @@ func buildBinary(t *testing.T) string {
 	return bin
 }
 
-func startCluster(t *testing.T, primaryPort, secondaryPort int) {
+func startCluster(t *testing.T, primaryPort, secondaryPort, secondaryDNSPort int) {
 	t.Helper()
 
 	testDir, err := os.Getwd()
@@ -922,6 +928,7 @@ func startCluster(t *testing.T, primaryPort, secondaryPort int) {
 	up.Env = append(os.Environ(),
 		fmt.Sprintf("DNS_PRIMARY_PORT=%d", primaryPort),
 		fmt.Sprintf("DNS_SECONDARY_PORT=%d", secondaryPort),
+		fmt.Sprintf("DNS_SECONDARY_DNS_PORT=%d", secondaryDNSPort),
 	)
 	out, err := up.CombinedOutput()
 	if err != nil {
@@ -938,6 +945,7 @@ func startCluster(t *testing.T, primaryPort, secondaryPort int) {
 		down.Env = append(os.Environ(),
 			fmt.Sprintf("DNS_PRIMARY_PORT=%d", primaryPort),
 			fmt.Sprintf("DNS_SECONDARY_PORT=%d", secondaryPort),
+			fmt.Sprintf("DNS_SECONDARY_DNS_PORT=%d", secondaryDNSPort),
 		)
 		out, err := down.CombinedOutput()
 		if err != nil {

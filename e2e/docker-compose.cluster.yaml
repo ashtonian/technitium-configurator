@@ -7,7 +7,7 @@ networks:
 
 services:
   dns-primary:
-    image: technitium/dns-server:15.6.1
+    image: ${DNS_SERVER_IMAGE:-technitium/dns-server:15.6.2@sha256:eb48ac5c135f4ab936b536f74f853d53e15ab39ef37fdbc9598a089b90d9f245}
     ports:
       - "${DNS_PRIMARY_PORT}:5380/tcp"
     networks:
@@ -25,9 +25,10 @@ services:
       start_period: 10s
 
   dns-secondary:
-    image: technitium/dns-server:15.6.1
+    image: ${DNS_SERVER_IMAGE:-technitium/dns-server:15.6.2@sha256:eb48ac5c135f4ab936b536f74f853d53e15ab39ef37fdbc9598a089b90d9f245}
     ports:
       - "${DNS_SECONDARY_PORT}:5380/tcp"
+      - "${DNS_SECONDARY_DNS_PORT}:53/udp"
     networks:
       cluster:
         ipv4_address: 172.28.0.11

@@ -18,7 +18,7 @@ docker build -t technitium-configurator .
 docker buildx build --platform linux/amd64,linux/arm64 -t technitium-configurator .
 
 go test -race ./...                  # unit tests, including DNS configs in the README, docs/ and examples/
-go test -tags e2e ./e2e              # needs Docker; starts Technitium 15.6.1 containers
+go test -tags e2e ./e2e              # needs Docker; defaults to Technitium 15.6.2 containers
 ```
 
 The unit tests load every `yaml` block in `README.md`, `docs/*.md` and `.github/DOCKERHUB.md`, and every DNS config under `examples/`, through the same loader and validation `configure` uses. A YAML block that is not a DNS config is marked with `<!-- docs-test: not a DNS config -->` on the line before it.
@@ -29,10 +29,14 @@ GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on 
 
 ## Code map
 
-The cluster suite runs both literal and discovered-address configurations. Its
+CI runs the standalone and cluster suites on pinned Technitium 15.6.1 and
+15.6.2 images; `DNS_SERVER_IMAGE` selects the image locally. The cluster suite
+runs both literal and discovered-address configurations. Its
 discovery case replaces a member's advertised address with an incorrect one,
 observes the native catalog ACL, restores the discovered address and checks
-subsequent record replication. The single-node suite also exercises first-boot
+subsequent record replication. A real UDP NOTIFY regression verifies refusal
+of an unrecognized sender, acceptance through an explicit trusted-network
+policy and refusal again after that policy is cleared. The single-node suite also exercises first-boot
 password setup, mounted-config reload, recovery from invalid configuration and
 signal-driven reconciliation shutdown. Unit coverage uses an injected wait
 and virtual time for retry/deadline behavior.
