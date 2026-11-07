@@ -68,6 +68,26 @@ func TestCredentialsStayOutOfURLs(t *testing.T) {
 	assert.JSONEq(t, `{"enableBlocking":false}`, settings.body)
 }
 
+func TestClosePreservesAPITokens(t *testing.T) {
+	c, seen := newTestServer(t, func(path string) string {
+		if path == "/api/user/login" {
+			return `{"status":"ok","token":"session-token"}`
+		}
+		return `{"status":"ok","response":{}}`
+	})
+	ctx := context.Background()
+	c.SetToken("caller-api-token")
+	require.NoError(t, c.Close(ctx))
+	assert.Empty(t, *seen)
+	require.NoError(t, c.Login(ctx, "admin", "password", ""))
+	require.NoError(t, c.Close(ctx))
+	require.Len(t, *seen, 2)
+	assert.Equal(t, "/api/user/logout", (*seen)[1].path)
+	assert.Equal(t, "Bearer session-token", (*seen)[1].auth)
+	require.NoError(t, c.Close(ctx))
+	assert.Len(t, *seen, 2)
+}
+
 func TestAPIErrorClassification(t *testing.T) {
 	tests := []struct {
 		reply  string

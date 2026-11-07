@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,12 +11,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -80,10 +84,11 @@ func TestE2EIdempotency(t *testing.T) {
 
 	// configure (DNS settings + zone + records)
 	runConfigurator(t, bin, "configure", envMap{
-		"DNS_API_URL":   apiURL,
-		"DNS_USERNAME":  defaultUser,
-		"DNS_PASSWORD":  newPassword,
-		"DNS_LOG_LEVEL": "info",
+		"DNS_API_URL":      apiURL,
+		"DNS_USERNAME":     defaultUser,
+		"DNS_PASSWORD":     newPassword,
+		"DNS_NEW_PASSWORD": "must-not-change-configure-credentials",
+		"DNS_LOG_LEVEL":    "info",
 	}, dnsConfigPath)
 
 	// Verify state via API
@@ -192,6 +197,9 @@ func TestE2EIdempotency(t *testing.T) {
 	if !recordPresent(apiURL, token2, "applied."+zoneName, "A", zoneName) {
 		t.Error("the valid record was not applied alongside the failure")
 	}
+	for _, mode := range []string{"password", "token-file"} {
+		t.Run("reconcile-"+mode, func(t *testing.T) { verifyReconciliation(t, bin, apiURL, token2, mode) })
+	}
 }
 
 func TestE2ECluster(t *testing.T) {
@@ -202,6 +210,25 @@ func TestE2ECluster(t *testing.T) {
 	requireDocker(t)
 
 	bin := buildBinary(t)
+	for _, mode := range []string{"literal", "automatic"} {
+		t.Run(mode, func(t *testing.T) { testE2ECluster(t, bin, mode) })
+	}
+}
+
+func TestE2EReconcileBootstrap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	requireDocker(t)
+	bin := buildBinary(t)
+	port := freePort(t)
+	apiURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	startDNSServer(t, port)
+	waitForHealth(t, apiURL+"/api/status", 60*time.Second)
+	verifyReconciliation(t, bin, apiURL, "", "bootstrap")
+}
+
+func testE2ECluster(t *testing.T, bin, mode string) {
 	primaryPort := freePort(t)
 	secondaryPort := freePort(t)
 	primaryAPIURL := fmt.Sprintf("http://127.0.0.1:%d", primaryPort)
@@ -229,6 +256,10 @@ func TestE2ECluster(t *testing.T) {
 		"DNS_NEW_PASSWORD": newPassword,
 		"DNS_LOG_LEVEL":    "info",
 	})
+	configuredPrimary, configuredSecondary := primaryIP, secondaryIP
+	if mode == "automatic" {
+		configuredPrimary, configuredSecondary = "auto,"+primaryIP, "auto,"+secondaryIP
+	}
 
 	// Primary config: cluster init + DNS settings + zone + records.
 	// Only the primary needs DNS config — settings, zones, and records
@@ -397,7 +428,7 @@ apps:
                 - "cloudflare"
               domains:
                 - "*"
-`, clusterDomain, primaryIP, clusterZone, clusterZone, clusterZone, clusterZone, clusterZone)
+`, clusterDomain, configuredPrimary, clusterZone, clusterZone, clusterZone, clusterZone, clusterZone)
 
 	primaryCfgPath := filepath.Join(t.TempDir(), "primary-config.yaml")
 	if err := os.WriteFile(primaryCfgPath, []byte(primaryCfg), 0644); err != nil {
@@ -406,12 +437,13 @@ apps:
 
 	// ── RUN 1: Initialize cluster and configure primary ──
 	t.Log("=== RUN 1: Initialize cluster and configure primary ===")
-	runConfigurator(t, bin, "configure", envMap{
+	initial := envMap{
 		"DNS_API_URL":   primaryAPIURL,
 		"DNS_USERNAME":  defaultUser,
 		"DNS_PASSWORD":  newPassword,
 		"DNS_LOG_LEVEL": "info",
-	}, primaryCfgPath)
+	}
+	runConfigurator(t, bin, "configure", initial, primaryCfgPath)
 
 	// Verify primary: cluster state + zone + records
 	token := loginAndGetToken(t, primaryAPIURL, defaultUser, newPassword)
@@ -463,7 +495,7 @@ apps:
   primaryUsername: %q
   primaryPassword: %q
   ignoreCertErrors: true
-`, secondaryIP, primaryIP, defaultUser, newPassword)
+`, configuredSecondary, primaryIP, defaultUser, newPassword)
 
 	secondaryCfgPath := filepath.Join(t.TempDir(), "secondary-config.yaml")
 	if err := os.WriteFile(secondaryCfgPath, []byte(secondaryCfg), 0644); err != nil {
@@ -504,6 +536,70 @@ apps:
 	}
 	verifyZoneExists(t, secondaryAPIURL, secondaryToken, clusterZone)
 	verifyRecordExists(t, secondaryAPIURL, secondaryToken, "www."+clusterZone, "A", clusterZone)
+	if mode == "automatic" {
+		// Native catalog policy must follow corrected source addresses, without
+		// a separately maintained catalog ACL.
+		apiCall(t, secondaryAPIURL, secondaryToken, "/api/admin/cluster/updateIpAddress", url.Values{"ipAddresses": {"198.51.100.11"}})
+		waitCatalogAddress(t, primaryAPIURL, token, clusterDomain, "198.51.100.11")
+		apiCall(t, primaryAPIURL, token, "/api/zones/records/add", url.Values{"domain": {"post-refresh." + clusterZone}, "type": {"A"}, "ipAddress": {"192.0.2.75"}})
+		apiCall(t, secondaryAPIURL, secondaryToken, "/api/zones/resync", url.Values{"zone": {clusterZone}})
+		failedDeadline := time.Now().Add(30 * time.Second)
+		for {
+			var listing struct {
+				Zones []struct {
+					Name   string `json:"name"`
+					Failed bool   `json:"syncFailed"`
+				} `json:"zones"`
+			}
+			if err := json.Unmarshal(queryDNSAPI(t, secondaryAPIURL, secondaryToken, "/api/zones/list"), &listing); err != nil {
+				t.Fatal(err)
+			}
+			failed := false
+			for _, z := range listing.Zones {
+				if z.Name == clusterZone {
+					failed = z.Failed
+				}
+			}
+			if failed {
+				break
+			}
+			if time.Now().After(failedDeadline) {
+				t.Fatal("incorrect advertised address did not produce a failed transfer baseline")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if recordPresent(secondaryAPIURL, secondaryToken, "post-refresh."+clusterZone, "A", clusterZone) {
+			t.Fatal("pending record replicated despite the refusing source-address ACL")
+		}
+		runConfigurator(t, bin, "configure", secondaryEnv, secondaryCfgPath)
+		waitCatalogAddress(t, primaryAPIURL, token, clusterDomain, secondaryIP)
+		apiCall(t, secondaryAPIURL, secondaryToken, "/api/zones/resync", url.Values{"zone": {clusterZone}})
+		recoveryDeadline := time.Now().Add(90 * time.Second)
+		for !recordPresent(secondaryAPIURL, secondaryToken, "post-refresh."+clusterZone, "A", clusterZone) {
+			if time.Now().After(recoveryDeadline) {
+				t.Fatal("secondary did not replicate after native cluster address repair")
+			}
+			time.Sleep(time.Second)
+		}
+	}
+	for _, node := range []struct{ api, token, address string }{
+		{primaryAPIURL, token, primaryIP}, {secondaryAPIURL, secondaryToken, secondaryIP},
+	} {
+		var state struct {
+			Nodes []struct {
+				State     string   `json:"state"`
+				Addresses []string `json:"ipAddresses"`
+			} `json:"clusterNodes"`
+		}
+		if err := json.Unmarshal(queryDNSAPI(t, node.api, node.token, "/api/admin/cluster/state"), &state); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range state.Nodes {
+			if n.State == "Self" && !equalStrings(n.Addresses, []string{node.address}) {
+				t.Fatalf("discovered addresses = %v, want %s", n.Addresses, node.address)
+			}
+		}
+	}
 
 	// ── RUN 3: Idempotency — re-run both ─────────────────
 	t.Log("=== RUN 3: Idempotency check ===")
@@ -609,6 +705,148 @@ apps:
 	assertCleanRerun(t, out)
 	if !strings.Contains(out, "Logged in with the primary's credentials") {
 		t.Errorf("a stale token on the secondary did not fall back to the primary's credentials:\n%s", out)
+	}
+}
+
+func waitCatalogAddress(t *testing.T, apiURL, token, clusterDomain, address string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var options struct {
+			Addresses []string `json:"zoneTransferNetworkACL"`
+		}
+		if err := json.Unmarshal(queryDNSAPI(t, apiURL, token, "/api/zones/options/get?zone=cluster-catalog."+clusterDomain), &options); err != nil {
+			t.Fatal(err)
+		}
+		if equalStrings(options.Addresses, []string{address}) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("catalog transfer ACL = %v, want %s", options.Addresses, address)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func verifyReconciliation(t *testing.T, bin, apiURL, token, mode string) {
+	t.Helper()
+	backend, err := url.Parse(apiURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(backend)
+	var unavailable atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"status":"error","errorMessage":"controlled API outage"}`)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	config := filepath.Join(t.TempDir(), "reconcile.yaml")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initialName := mode + ".reconciled." + zoneName
+	reloadedName := mode + ".reloaded." + zoneName
+	write("zones:\n  - {zone: " + zoneName + ", type: Primary}\nrecords:\n  - {domain: " + initialName + ", type: A, ipAddress: 192.0.2.73}\n")
+	environment := envMap{
+		"DNS_API_URL": server.URL, "DNS_USERNAME": defaultUser, "DNS_PASSWORD": newPassword,
+		"DNS_RECONCILE_INTERVAL": "1s", "DNS_RECONCILE_TIMEOUT": "30s",
+		"DNS_WAIT_TIMEOUT": "0",
+	}
+	if mode == "bootstrap" {
+		environment["DNS_PASSWORD"] = defaultPassword
+		environment["DNS_NEW_PASSWORD"] = newPassword
+	}
+	tokenFile := filepath.Join(t.TempDir(), "api-token")
+	if mode == "token-file" {
+		delete(environment, "DNS_USERNAME")
+		delete(environment, "DNS_PASSWORD")
+		if err := os.WriteFile(tokenFile, []byte(token), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		environment["DNS_API_TOKEN_FILE"] = tokenFile
+	}
+	command := configuratorCmd(bin, "reconcile", environment, []string{config})
+	pipe, err := command.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	lines := make(chan string, 128)
+	readerContext, stopReader := context.WithCancel(context.Background())
+	t.Cleanup(stopReader)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(pipe)
+		for scanner.Scan() {
+			select {
+			case lines <- scanner.Text():
+			case <-readerContext.Done():
+				return
+			}
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+	})
+	wait := func(want string) {
+		t.Helper()
+		deadline := time.NewTimer(45 * time.Second)
+		defer deadline.Stop()
+		for {
+			select {
+			case line, ok := <-lines:
+				if !ok {
+					t.Fatalf("reconciler exited before %q", want)
+				}
+				if strings.Contains(line, want) {
+					return
+				}
+			case <-deadline.C:
+				t.Fatalf("reconciler did not report %q", want)
+			}
+		}
+	}
+	wait("Configuration complete")
+	verificationToken := loginAndGetToken(t, apiURL, defaultUser, newPassword)
+	verifyRecordExists(t, apiURL, verificationToken, initialName, "A", zoneName)
+	unavailable.Store(true)
+	wait("Reconciliation failed")
+	unavailable.Store(false)
+	write("unknownField: invalid\n")
+	wait("Reconciliation failed")
+	if mode == "token-file" {
+		replacement := loginAndGetToken(t, apiURL, defaultUser, newPassword)
+		if err := os.WriteFile(tokenFile, []byte(replacement), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		apiCall(t, apiURL, token, "/api/user/logout", url.Values{})
+	}
+	write("records:\n  - {domain: " + reloadedName + ", type: A, ipAddress: 192.0.2.74}\n")
+	wait("Configuration complete")
+	verifyRecordExists(t, apiURL, verificationToken, reloadedName, "A", zoneName)
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reconcile cancellation: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconciler ignored cancellation")
 	}
 }
 
@@ -845,6 +1083,7 @@ var requestLog = regexp.MustCompile(`msg="http request" method=(\w+) path=(\S+)`
 // zone options and cluster options.
 var rerunWrites = map[string]bool{
 	"/api/user/login":                       true,
+	"/api/user/logout":                      true,
 	"/api/settings/set":                     true,
 	"/api/zones/options/set":                true,
 	"/api/admin/cluster/primary/setOptions": true,

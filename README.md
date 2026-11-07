@@ -30,6 +30,12 @@ needs Go 1.26 or later. See [compatibility](docs/compatibility.md).
 record replacement and partial failures; [limitations](docs/compatibility.md#limitations)
 defines what the tool manages.
 
+For a controller or sidecar, [continuous reconciliation](docs/reconciliation.md)
+reloads mounted DNS configuration, retries failed passes with deadlines and
+stops on SIGINT/SIGTERM. Clustered containers can use `cluster.nodeIPs: auto`
+to advertise the DNS server's actual interfaces after replacement. Existing
+single-node configurations and one-shot commands keep their normal behavior.
+
 ## Quick start
 
 For an existing server, save this as `dns.yaml`:
@@ -63,7 +69,7 @@ docker run --rm \
   -e DNS_USERNAME="admin" \
   -e DNS_PASSWORD="your-admin-password" \
   -v "$(pwd)/dns.yaml:/app/dns.yaml:ro" \
-  ashtonian/technitium-configurator:3.1.0 configure /app/dns.yaml
+  ashtonian/technitium-configurator:3.2.0 configure /app/dns.yaml
 ```
 
 The equivalent CLI command and output, including a second run:

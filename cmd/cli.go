@@ -28,6 +28,8 @@ const envHelp = `Environment variables:
   DNS_TOKEN_PATH            Token file for create-token
   DNS_TIMEOUT               Timeout for each API call (default: 30s)
   DNS_WAIT_TIMEOUT          Wait for the web service to answer (default: 60s, 0 disables)
+  DNS_RECONCILE_INTERVAL    Delay between reconciliation passes (default: 1m)
+  DNS_RECONCILE_TIMEOUT     Deadline for each reconciliation pass (default: 5m)
   DNS_LOG_LEVEL             debug, info, warn or error (default: info)
   DNS_K8S_SECRET_NAME       Kubernetes Secret create-token stores the token in
   DNS_K8S_SECRET_NAMESPACE  Namespace of that Secret (default: the current one)

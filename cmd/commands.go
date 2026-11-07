@@ -33,6 +33,13 @@ type Command struct {
 
 // Commands is a map of all available commands
 var Commands = map[string]Command{
+	"reconcile": {
+		Name:        "reconcile",
+		Usage:       "reconcile [path...]",
+		Description: "Continuously reload and apply DNS config with bounded passes",
+		MaxArgs:     -1,
+		Run:         runReconcile,
+	},
 	"configure": {
 		Name:        "configure",
 		Usage:       "configure [path...]",
@@ -77,8 +84,10 @@ func RunCommand(ctx context.Context, cfg *technitium.ClientConfig, command strin
 	if err := cfg.Validate(command); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
-	if err := cfg.LoadAPITokenFile(command); err != nil {
-		return err
+	if command != "reconcile" {
+		if err := cfg.LoadAPITokenFile(command); err != nil {
+			return err
+		}
 	}
 
 	return cmd.Run(ctx, cfg, args, stdout)
@@ -92,6 +101,7 @@ func newClient(ctx context.Context, cfg *technitium.ClientConfig) (*technitium.C
 	}
 	if cfg.WaitTimeout > 0 {
 		if err := client.WaitReady(ctx, cfg.WaitTimeout, 2*time.Second); err != nil {
+			_ = client.Close(ctx)
 			return nil, err
 		}
 	}
@@ -115,6 +125,10 @@ func authenticate(ctx context.Context, client *technitium.Client, cfg *technitiu
 }
 
 func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []string, _ io.Writer) error {
+	return configurePass(ctx, cfg, args, false)
+}
+
+func configurePass(ctx context.Context, cfg *technitium.ClientConfig, args []string, bootstrapPassword bool) error {
 	paths := args
 	if len(paths) == 0 {
 		paths = []string{cfg.ConfigPath}
@@ -128,12 +142,40 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 	if err != nil {
 		return err
 	}
-	if err := authenticateConfigure(ctx, client, cfg, desired.Cluster); err != nil {
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.Timeout)
+		defer cancel()
+		if err := client.Close(cleanup); err != nil {
+			slog.Warn("Close configuration session", "error", err)
+		}
+	}()
+	authenticated := *cfg
+	changePassword := false
+	if bootstrapPassword && authenticated.NewPassword != "" && authenticated.APIToken == "" {
+		var err error
+		changePassword, err = authenticateBootstrap(ctx, client, cfg)
+		if err != nil {
+			return err
+		}
+		if !changePassword {
+			authenticated.Password = authenticated.NewPassword
+		}
+	} else if err := authenticateConfigure(ctx, client, cfg, desired.Cluster); err != nil {
 		return err
 	}
-
-	a := &applier{client: client, cfg: cfg, desired: desired}
+	a := &applier{client: client, cfg: &authenticated, desired: desired, bootstrapPassword: changePassword}
 	return a.run(ctx)
+}
+
+// authenticateBootstrap is opt-in password setup for continuous reconciliation.
+func authenticateBootstrap(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig) (bool, error) {
+	if err := client.Login(ctx, cfg.Username, cfg.NewPassword, ""); err == nil {
+		return false, nil
+	}
+	if err := client.Login(ctx, cfg.Username, cfg.Password, ""); err != nil {
+		return false, fmt.Errorf("bootstrap login as %q: %w", cfg.Username, err)
+	}
+	return true, nil
 }
 
 // authenticateConfigure logs in for configure. Joining a cluster replaces a

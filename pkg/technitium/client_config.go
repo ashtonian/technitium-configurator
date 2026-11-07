@@ -44,8 +44,10 @@ type ClientConfig struct {
 	// WaitTimeout bounds how long commands wait for /api/status to answer,
 	// at start and after settings restart the web service. Zero disables
 	// the wait.
-	WaitTimeout time.Duration `yaml:"wait_timeout" env:"DNS_WAIT_TIMEOUT"`
-	LogLevel    LogLevel      `yaml:"log_level" env:"DNS_LOG_LEVEL"`
+	WaitTimeout       time.Duration `yaml:"wait_timeout" env:"DNS_WAIT_TIMEOUT"`
+	ReconcileInterval time.Duration `yaml:"reconcile_interval" env:"DNS_RECONCILE_INTERVAL"`
+	ReconcileTimeout  time.Duration `yaml:"reconcile_timeout" env:"DNS_RECONCILE_TIMEOUT"`
+	LogLevel          LogLevel      `yaml:"log_level" env:"DNS_LOG_LEVEL"`
 	// Kubernetes Secret that create-token stores the token in. An empty
 	// namespace means the current one, as kubectl would choose it.
 	K8sSecretName      string `yaml:"k8s_secret_name" env:"DNS_K8S_SECRET_NAME"`
@@ -56,11 +58,13 @@ type ClientConfig struct {
 // DefaultConfig returns a ClientConfig with default values.
 func DefaultConfig() *ClientConfig {
 	return &ClientConfig{
-		ConfigPath:   "config.yaml",
-		Timeout:      30 * time.Second,
-		WaitTimeout:  60 * time.Second,
-		LogLevel:     LogLevelInfo,
-		K8sSecretKey: "api-token",
+		ConfigPath:        "config.yaml",
+		Timeout:           30 * time.Second,
+		WaitTimeout:       60 * time.Second,
+		ReconcileInterval: time.Minute,
+		ReconcileTimeout:  5 * time.Minute,
+		LogLevel:          LogLevelInfo,
+		K8sSecretKey:      "api-token",
 	}
 }
 
@@ -130,6 +134,7 @@ func (c *ClientConfig) LoadFromEnv() error {
 // commandsNeedingAPIAuth authenticate with a token or a username and password.
 var commandsNeedingAPIAuth = map[string]bool{
 	"configure":     true,
+	"reconcile":     true,
 	"cluster-state": true,
 	"export":        true,
 }
@@ -144,6 +149,9 @@ func (c *ClientConfig) Validate(command string) error {
 	}
 	if c.WaitTimeout < 0 {
 		return errors.New("wait timeout must not be negative")
+	}
+	if command == "reconcile" && (c.ReconcileInterval <= 0 || c.ReconcileTimeout <= 0) {
+		return errors.New("reconcile interval and timeout must be greater than 0")
 	}
 	switch strings.ToLower(string(c.LogLevel)) {
 	case "", string(LogLevelDebug), string(LogLevelInfo), string(LogLevelWarn), string(LogLevelError):

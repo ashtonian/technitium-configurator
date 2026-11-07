@@ -10,6 +10,7 @@
 | Command | Description |
 |---|---|
 | `configure [path...]` | Apply DNS config files. A path may be a file or a directory (its `*.yaml` and `*.yml` files, in name order). Without a path, `DNS_CONFIG_PATH` is used, then the client config file's `config_path`, then `config.yaml` |
+| `reconcile [path...]` | Continuously reload and apply the same DNS config, retrying failed passes until SIGINT or SIGTERM. See [reconciliation](reconciliation.md) |
 | `export [file]` | Write the server's configuration as a DNS config file, to stdout or to `file` (mode `0600`) |
 | `create-token` | Create an API token, or keep a stored one the server still accepts, and save it to a file and/or a Kubernetes Secret ([API tokens](api-tokens.md#api-tokens)) |
 | `change-password` | Change the password. Succeeds without changes when the new password already works |
@@ -28,21 +29,23 @@ Each client configuration value can come from a default, a client config file (`
 |---|---|---|---|---|---|
 | `DNS_API_URL` | `api_url` | | URL | — (required) | Technitium web service, for example `http://dns-server:5380`. Must not contain credentials, a query or a fragment |
 | `DNS_API_TOKEN` | `api_token` | | string | | API token. When set, it is used instead of username and password |
-| `DNS_API_TOKEN_FILE` | `api_token_file` | | path | | File holding the API token: the file `create-token` writes, or only the token. Used like `DNS_API_TOKEN`, which may not be set too. Read only by `configure`, `export` and `cluster-state` |
+| `DNS_API_TOKEN_FILE` | `api_token_file` | | path | | File holding the API token: the file `create-token` writes, or only the token. Used like `DNS_API_TOKEN`, which may not be set too. Read by `configure`, `reconcile`, `export` and `cluster-state` |
 | `DNS_USERNAME` | `username` | | string | | User for login, `create-token` and `change-password` |
 | `DNS_PASSWORD` | `password` | | string | | Password (the current one for `change-password`) |
-| `DNS_NEW_PASSWORD` | `new_password` | | string | | New password for `change-password` |
+| `DNS_NEW_PASSWORD` | `new_password` | | string | | New password for `change-password` or optional `reconcile` bootstrap |
 | `DNS_CLIENT_CONFIG` | | `--config` | path | | Client config file. Unknown keys are errors; a named file must exist |
-| `DNS_CONFIG_PATH` | `config_path` | | path | `config.yaml` | DNS config file or directory `configure` uses when given no path |
+| `DNS_CONFIG_PATH` | `config_path` | | path | `config.yaml` | DNS config file or directory `configure` and `reconcile` use when given no path |
 | `DNS_TOKEN_PATH` | `token_path` | `--token-path` | path | | Token file `create-token` writes (mode `0600`) |
 | `DNS_TIMEOUT` | `timeout` | | duration | `30s` | Timeout for each API call |
 | `DNS_WAIT_TIMEOUT` | `wait_timeout` | | duration | `60s` | How long to wait for `/api/status` at start and after a settings change restarts the web service. `0` disables the start-up wait |
+| `DNS_RECONCILE_INTERVAL` | `reconcile_interval` | | duration | `1m` | Delay after each reconciliation pass, successful or failed; must be positive |
+| `DNS_RECONCILE_TIMEOUT` | `reconcile_timeout` | | duration | `5m` | Deadline for each pass; session cleanup additionally has the per-call timeout |
 | `DNS_LOG_LEVEL` | `log_level` | `--log-level` | enum | `info` | `debug`, `info`, `warn` or `error` |
 | `DNS_K8S_SECRET_NAME` | `k8s_secret_name` | | string | | Kubernetes Secret `create-token` stores the token in |
 | `DNS_K8S_SECRET_NAMESPACE` | `k8s_secret_namespace` | | string | current namespace | Namespace of that Secret. Unset, it is the current namespace as `kubectl` chooses it: the kubeconfig context's, else the pod's own, else `default` |
 | `DNS_K8S_SECRET_KEY` | `k8s_secret_key` | | string | `api-token` | Key in that Secret |
 
-`configure`, `export` and `cluster-state` need a token, a token file, or a username and password. `create-token` and `change-password` need a username and password.
+`configure`, `reconcile`, `export` and `cluster-state` need a token, a token file, or a username and password. `create-token` and `change-password` need a username and password. With `DNS_NEW_PASSWORD` and password authentication, `reconcile` first tries the new password; otherwise it authenticates with the original password, changes it after preflight and continues with the new one. This supports a controller starting beside a fresh server without shell bootstrap steps.
 
 A client config file:
 
