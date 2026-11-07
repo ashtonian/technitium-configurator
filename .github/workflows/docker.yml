@@ -51,11 +51,22 @@ jobs:
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
   e2e:
-    # Runs the configurator against real Technitium servers (single node and
-    # a two-node cluster) pinned in e2e/docker-compose*.yaml.
+    name: e2e (Technitium ${{ matrix.server }})
+    # Exercise standalone and clustered servers on both supported patch versions.
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-technitium-configurator
     needs: test
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - server: "15.6.1"
+            image: technitium/dns-server:15.6.1@sha256:e5474007d142d509c7de0d855132e3f0469bd6d5d77abf23dff5dad4e2975d09
+          - server: "15.6.2"
+            image: technitium/dns-server:15.6.2@sha256:eb48ac5c135f4ab936b536f74f853d53e15ab39ef37fdbc9598a089b90d9f245
+    env:
+      DNS_SERVER_IMAGE: ${{ matrix.image }}
     permissions:
       id-token: write
       contents: read

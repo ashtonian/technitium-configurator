@@ -35,7 +35,9 @@ The reconciler reads that server's current interfaces and updates native
 membership, so transfer ACLs and NOTIFY destinations follow replacements.
 Leave the native catalog's policy to Technitium; use explicit member-zone
 overrides for external transfer readers, preserving the cluster's TSIG key.
-See [clusters](clusters.md).
+For changing primary addresses, configure a trusted sender network in each
+node's `dnsSettings.notifyAllowedNetworks` so the first notification can be
+accepted before primary metadata propagates. See [clusters](clusters.md).
 
 ```sh
 DNS_API_URL=http://dns-server:5380 \

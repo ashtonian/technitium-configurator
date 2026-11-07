@@ -231,6 +231,7 @@ func TestE2EReconcileBootstrap(t *testing.T) {
 func testE2ECluster(t *testing.T, bin, mode string) {
 	primaryPort := freePort(t)
 	secondaryPort := freePort(t)
+	secondaryDNSPort := freeUDPPort(t)
 	primaryAPIURL := fmt.Sprintf("http://127.0.0.1:%d", primaryPort)
 	secondaryAPIURL := fmt.Sprintf("http://127.0.0.1:%d", secondaryPort)
 
@@ -242,7 +243,7 @@ func testE2ECluster(t *testing.T, bin, mode string) {
 		forwarderZone = "forwarded.local"
 	)
 
-	startCluster(t, primaryPort, secondaryPort)
+	startCluster(t, primaryPort, secondaryPort, secondaryDNSPort)
 	waitForHealth(t, primaryAPIURL+"/api/status", 60*time.Second)
 	waitForHealth(t, secondaryAPIURL+"/api/status", 60*time.Second)
 
@@ -382,7 +383,10 @@ apps:
     url: "https://download.technitium.com/dns/apps/AdvancedBlockingApp-v11.2.1.zip"
     config:
       enableBlocking: true
+      blockingAnswerTtl: 30
       blockListUrlUpdateIntervalHours: 24
+      blockListUrlUpdateIntervalMinutes: 0
+      localEndPointGroupMap: {}
       networkGroupMap:
         "0.0.0.0/0": "e2e"
         "::/0": "e2e"
@@ -706,6 +710,11 @@ apps:
 	if !strings.Contains(out, "Logged in with the primary's credentials") {
 		t.Errorf("a stale token on the secondary did not fall back to the primary's credentials:\n%s", out)
 	}
+	if mode == "automatic" {
+		t.Run("notify-source-policy", func(t *testing.T) {
+			testNotifySourcePolicy(t, bin, secondaryAPIURL, secondaryDNSPort, clusterZone)
+		})
+	}
 }
 
 func waitCatalogAddress(t *testing.T, apiURL, token, clusterDomain, address string) {
@@ -904,7 +913,7 @@ func buildBinary(t *testing.T) string {
 	return bin
 }
 
-func startCluster(t *testing.T, primaryPort, secondaryPort int) {
+func startCluster(t *testing.T, primaryPort, secondaryPort, secondaryDNSPort int) {
 	t.Helper()
 
 	testDir, err := os.Getwd()
@@ -922,6 +931,7 @@ func startCluster(t *testing.T, primaryPort, secondaryPort int) {
 	up.Env = append(os.Environ(),
 		fmt.Sprintf("DNS_PRIMARY_PORT=%d", primaryPort),
 		fmt.Sprintf("DNS_SECONDARY_PORT=%d", secondaryPort),
+		fmt.Sprintf("DNS_SECONDARY_DNS_PORT=%d", secondaryDNSPort),
 	)
 	out, err := up.CombinedOutput()
 	if err != nil {
@@ -938,6 +948,7 @@ func startCluster(t *testing.T, primaryPort, secondaryPort int) {
 		down.Env = append(os.Environ(),
 			fmt.Sprintf("DNS_PRIMARY_PORT=%d", primaryPort),
 			fmt.Sprintf("DNS_SECONDARY_PORT=%d", secondaryPort),
+			fmt.Sprintf("DNS_SECONDARY_DNS_PORT=%d", secondaryDNSPort),
 		)
 		out, err := down.CombinedOutput()
 		if err != nil {
@@ -946,7 +957,7 @@ func startCluster(t *testing.T, primaryPort, secondaryPort int) {
 	})
 }
 
-func startDNSServer(t *testing.T, port int) {
+func startDNSServer(t *testing.T, port int) func() {
 	t.Helper()
 
 	testDir, err := os.Getwd()
@@ -980,6 +991,15 @@ func startDNSServer(t *testing.T, port int) {
 			t.Logf("docker compose down failed: %v\n%s", err, out)
 		}
 	})
+	return func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "-p", project, "restart", "--timeout", "30", "dns")
+		cmd.Env = append(os.Environ(), fmt.Sprintf("DNS_PORT=%d", port))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("docker compose restart failed: %v\n%s", err, out)
+		}
+	}
 }
 
 func waitForHealth(t *testing.T, url string, timeout time.Duration) {
@@ -1117,7 +1137,13 @@ func loginAndGetToken(t *testing.T, apiURL, user, pass string) string {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s/api/user/login?user=%s&pass=%s&includeInfo=false", apiURL, user, pass)
-	resp, err := http.Get(reqURL)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("login request failed: %v", err)
 	}
@@ -1149,7 +1175,13 @@ func queryDNSAPI(t *testing.T, apiURL, token, path string) json.RawMessage {
 	}
 	reqURL := fmt.Sprintf("%s%s%stoken=%s", apiURL, path, sep, token)
 
-	resp, err := http.Get(reqURL)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("API query %s failed: %v", path, err)
 	}

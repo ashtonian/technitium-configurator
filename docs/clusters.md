@@ -2,7 +2,7 @@
 
 [Documentation](README.md) · [Quick start](../README.md#quick-start)
 
-Add a `cluster` section and `configure` applies it after the settings and before everything else. Only the primary needs settings, zones and records; secondaries need only the `cluster` section. [A two-node cluster](recipes.md#a-two-node-cluster) shows both files. The full set of cluster fields:
+Add a `cluster` section and `configure` applies it after the settings and before everything else. The primary defines zones and records; secondaries can also declare per-node DNS settings. [A two-node cluster](recipes.md#a-two-node-cluster) shows both files. The full set of cluster fields:
 
 ```yaml
 # primary
@@ -45,6 +45,21 @@ include the node's per-pod Service VIP so peers can still reach it while pod
 addresses change; advertise the pod interfaces too so source-address ACLs
 match. Duplicate addresses are removed. Discovery must still succeed when a
 literal address is present.
+
+**NOTIFY receivers.** A receiver checks a notification's source against its
+currently known primary addresses. After a primary address replacement, the
+first notification can arrive before that metadata propagates and be refused
+until retry. For a trusted container network with changing primary addresses,
+set the sender network explicitly in each node's file:
+
+```yaml
+dnsSettings:
+  notifyAllowedNetworks:
+    - "192.0.2.0/24"
+```
+
+Use the actual trusted sender network. This permits refresh notifications;
+transfers still use the configured primary servers, source ACLs and TSIG keys.
 
 **Catalog ACLs.** A catalog member follows the catalog's query access, zone transfer and notify settings unless the zone sets the matching override to `true`. Overrides are never turned on for you. When a member zone declares one of those groups without setting its override, the run warns that the declared values are not in effect; set the override to `true` to apply them, or `false` to keep the catalog's and silence the warning.
 

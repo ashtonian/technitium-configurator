@@ -1,15 +1,18 @@
 services:
   dns:
-    image: technitium/dns-server:15.6.1
+    image: ${DNS_SERVER_IMAGE:-technitium/dns-server:15.6.2@sha256:eb48ac5c135f4ab936b536f74f853d53e15ab39ef37fdbc9598a089b90d9f245}
     ports:
       - "${DNS_PORT}:5380/tcp"
     environment:
       - DNS_SERVER_DOMAIN=e2e-test.local
-    tmpfs:
-      - /etc/dns
+    volumes:
+      - config:/etc/dns
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/5380'"]
       interval: 5s
       timeout: 5s
       retries: 12
       start_period: 10s
+
+volumes:
+  config:

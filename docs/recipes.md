@@ -90,6 +90,8 @@ apps:
       enableBlocking: true
       blockingAnswerTtl: 30
       blockListUrlUpdateIntervalHours: 24
+      blockListUrlUpdateIntervalMinutes: 0
+      localEndPointGroupMap: {}
       networkGroupMap:
         "0.0.0.0/0": "home"
         "::/0": "home"
