@@ -422,7 +422,7 @@ func (cc *ClusterConfig) validate(v *validator) {
 		v.addf("cluster.mode %q must be \"primary\" or \"secondary\"", cc.Mode)
 	}
 	for i, ip := range cc.NodeIPList() {
-		if cc.NodeIPs != "auto" {
+		if ip != "auto" {
 			v.ip(fmt.Sprintf("cluster.nodeIPs[%d]", i), ip, false, false)
 		}
 	}

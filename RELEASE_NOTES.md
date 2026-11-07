@@ -4,15 +4,18 @@
   server's interfaces before configuration changes. Cluster initialization,
   joining and membership updates use those addresses, keeping native transfer
   ACLs and NOTIFY targets aligned with container replacements. Literal node
-  address lists retain their existing behavior.
+  address lists retain their existing behavior. Combine discovery with a
+  stable bootstrap address, for example `nodeIPs: "auto,192.0.2.53"`.
 - `reconcile [path...]` continuously reloads and applies DNS configuration,
   retries failed passes, and responds to SIGINT/SIGTERM. `DNS_RECONCILE_INTERVAL`
   defaults to one minute and `DNS_RECONCILE_TIMEOUT` to five minutes. Mounted
   token files are reloaded per pass. Login sessions and idle HTTP connections
   are released between passes; supplied API tokens are not revoked.
-- `configure` and `reconcile` support first-boot password setup when
+- `reconcile` supports first-boot password setup when
   `DNS_NEW_PASSWORD` is set: use that password if it already works, or change
-  `DNS_PASSWORD` before applying configuration.
+  `DNS_PASSWORD` before applying configuration. One-shot `configure` retains
+  its existing credential semantics, including when a shared client config
+  contains `new_password`.
 
 See [continuous reconciliation](docs/reconciliation.md) and
 [cluster addresses and catalog policy](docs/clusters.md).

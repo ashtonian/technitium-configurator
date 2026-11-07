@@ -39,6 +39,13 @@ cluster:
 
 **Zone replication.** Zones replicate through the cluster catalog zone, `cluster-catalog.<cluster domain>`. On the primary, every Primary, Secondary, Stub and Forwarder zone joins it unless the zone sets `catalog` itself (`catalog: ""` keeps a zone on the primary only). A zone already in another catalog is not moved. If the account cannot read the cluster state (it needs Administration view permission), the run fails rather than guess, unless every zone sets `catalog`.
 
+Discovery can be combined with literal addresses: `nodeIPs: "auto,192.0.2.53"`
+advertises the current interfaces plus that stable address. In Kubernetes,
+include the node's per-pod Service VIP so peers can still reach it while pod
+addresses change; advertise the pod interfaces too so source-address ACLs
+match. Duplicate addresses are removed. Discovery must still succeed when a
+literal address is present.
+
 **Catalog ACLs.** A catalog member follows the catalog's query access, zone transfer and notify settings unless the zone sets the matching override to `true`. Overrides are never turned on for you. When a member zone declares one of those groups without setting its override, the run warns that the declared values are not in effect; set the override to `true` to apply them, or `false` to keep the catalog's and silence the warning.
 
 The cluster catalog allows zone transfers only from the cluster nodes, signed with the cluster's TSIG key (`cluster-catalog.<cluster domain>`), and notifies the nodes directly; that is what replicates member zones. A zone that overrides zone transfer or notify replaces it, so it must allow the node IPs and list the cluster key in `zoneTransferTsigKeyNames`, or it stops replicating. Leaving zone transfer inherited is usually right; query access can be overridden safely.

@@ -61,7 +61,7 @@ func (a *applier) run(ctx context.Context) error {
 	if err := a.checkClusterOptions(ctx); err != nil {
 		return err
 	}
-	if cc := a.desired.Cluster; cc != nil && cc.NodeIPs == "auto" {
+	if cc := a.desired.Cluster; cc != nil && cc.UsesAutomaticNodeIPs() {
 		state, err := a.cluster(ctx)
 		if err != nil {
 			return err

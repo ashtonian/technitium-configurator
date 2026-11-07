@@ -125,6 +125,10 @@ func authenticate(ctx context.Context, client *technitium.Client, cfg *technitiu
 }
 
 func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []string, _ io.Writer) error {
+	return configurePass(ctx, cfg, args, false)
+}
+
+func configurePass(ctx context.Context, cfg *technitium.ClientConfig, args []string, bootstrapPassword bool) error {
 	paths := args
 	if len(paths) == 0 {
 		paths = []string{cfg.ConfigPath}
@@ -145,16 +149,31 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 			slog.Warn("Close configuration session", "error", err)
 		}
 	}()
-	if err := authenticateConfigure(ctx, client, cfg, desired.Cluster); err != nil {
-		return err
-	}
-
 	authenticated := *cfg
-	if authenticated.NewPassword != "" && authenticated.APIToken == "" {
+	if bootstrapPassword && authenticated.NewPassword != "" && authenticated.APIToken == "" {
+		if err := authenticateBootstrap(ctx, client, cfg); err != nil {
+			return err
+		}
 		authenticated.Password = authenticated.NewPassword
+	} else if err := authenticateConfigure(ctx, client, cfg, desired.Cluster); err != nil {
+		return err
 	}
 	a := &applier{client: client, cfg: &authenticated, desired: desired}
 	return a.run(ctx)
+}
+
+// authenticateBootstrap is opt-in password setup for continuous reconciliation.
+func authenticateBootstrap(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig) error {
+	if err := client.Login(ctx, cfg.Username, cfg.NewPassword, ""); err == nil {
+		return nil
+	}
+	if err := client.Login(ctx, cfg.Username, cfg.Password, ""); err != nil {
+		return fmt.Errorf("bootstrap login as %q: %w", cfg.Username, err)
+	}
+	if err := client.ChangePassword(ctx, cfg.Password, cfg.NewPassword); err != nil {
+		return err
+	}
+	return client.Login(ctx, cfg.Username, cfg.NewPassword, "")
 }
 
 // authenticateConfigure logs in for configure. Joining a cluster replaces a
@@ -163,18 +182,6 @@ func runConfigure(ctx context.Context, cfg *technitium.ClientConfig, args []stri
 // credentials from the cluster section are tried. A one-time password
 // cannot be reused on later runs, so that user must not need one.
 func authenticateConfigure(ctx context.Context, client *technitium.Client, cfg *technitium.ClientConfig, cc *technitium.ClusterConfig) error {
-	if cfg.NewPassword != "" && cfg.APIToken == "" {
-		if err := client.Login(ctx, cfg.Username, cfg.NewPassword, ""); err == nil {
-			return nil
-		}
-		if err := client.Login(ctx, cfg.Username, cfg.Password, ""); err != nil {
-			return fmt.Errorf("bootstrap login as %q: %w", cfg.Username, err)
-		}
-		if err := client.ChangePassword(ctx, cfg.Password, cfg.NewPassword); err != nil {
-			return err
-		}
-		return client.Login(ctx, cfg.Username, cfg.NewPassword, "")
-	}
 	err := authenticate(ctx, client, cfg)
 	if err == nil || cc == nil || cc.Mode != "secondary" || cc.PrimaryPassword == "" {
 		return err

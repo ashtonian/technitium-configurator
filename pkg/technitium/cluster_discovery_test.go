@@ -17,6 +17,8 @@ func TestResolveNodeIPs(t *testing.T) {
 	}{
 		{"literal addresses remain authoritative", "192.0.2.10,192.0.2.11", []string{"198.51.100.20"}, []string{"192.0.2.10", "192.0.2.11"}, ""},
 		{"target interfaces", "auto", []string{"192.0.2.11", "::ffff:192.0.2.10", "192.0.2.10", "2001:db8::1"}, []string{"192.0.2.10", "192.0.2.11", "2001:db8::1"}, ""},
+		{"stable address with target interfaces", "192.0.2.50,auto,192.0.2.10", []string{"192.0.2.10"}, []string{"192.0.2.10", "192.0.2.50"}, ""},
+		{"discovery cannot silently fall back to the stable address", "auto,192.0.2.50", nil, nil, "no usable interface addresses"},
 		{"empty discovery", "auto", nil, nil, "no usable interface addresses"},
 		{"invalid discovery", "auto", []string{"192.0.2.10", "invalid"}, nil, "unusable address"},
 		{"loopback", "auto", []string{"127.0.0.1"}, nil, "unusable address"},
@@ -36,6 +38,6 @@ func TestResolveNodeIPs(t *testing.T) {
 }
 
 func TestAutomaticClusterConfig(t *testing.T) {
-	_, err := load("cluster:\n  mode: primary\n  domain: cluster.example.test\n  nodeIPs: auto\n")
+	_, err := load("cluster:\n  mode: primary\n  domain: cluster.example.test\n  nodeIPs: auto,192.0.2.50\n")
 	require.NoError(t, err)
 }

@@ -28,6 +28,9 @@ before applying configuration. `DNS_WAIT_TIMEOUT` lets the reconciler start
 alongside the server.
 
 For clustered containers, use `cluster.nodeIPs: auto` in each node's file.
+Include a stable per-node Service address in the same list where available,
+for example `nodeIPs: "auto,192.0.2.53"`, to preserve a reachable bootstrap path
+while interfaces change.
 The reconciler reads that server's current interfaces and updates native
 membership, so transfer ACLs and NOTIFY destinations follow replacements.
 Leave the native catalog's policy to Technitium; use explicit member-zone

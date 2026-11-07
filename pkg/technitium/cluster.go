@@ -14,8 +14,11 @@ import (
 
 // ResolveNodeIPs uses the target server's interfaces, never the client's.
 func (cc *ClusterConfig) ResolveNodeIPs(state *ClusterState) ([]string, error) {
-	if cc.NodeIPs != "auto" {
+	if !cc.UsesAutomaticNodeIPs() {
 		return cc.NodeIPList(), nil
+	}
+	if len(state.ServerIpAddresses) == 0 {
+		return nil, fmt.Errorf("cluster.nodeIPs: server reported no usable interface addresses")
 	}
 	ips := make([]string, 0, len(state.ServerIpAddresses))
 	for _, raw := range state.ServerIpAddresses {
@@ -25,11 +28,22 @@ func (cc *ClusterConfig) ResolveNodeIPs(state *ClusterState) ([]string, error) {
 		}
 		ips = append(ips, ip.Unmap().String())
 	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("cluster.nodeIPs: server reported no usable interface addresses")
+	for _, raw := range cc.NodeIPList() {
+		if raw == "auto" {
+			continue
+		}
+		ip, err := netip.ParseAddr(raw)
+		if err != nil {
+			return nil, fmt.Errorf("cluster.nodeIPs: invalid explicit address %q", raw)
+		}
+		ips = append(ips, ip.Unmap().String())
 	}
 	slices.Sort(ips)
 	return slices.Compact(ips), nil
+}
+
+func (cc *ClusterConfig) UsesAutomaticNodeIPs() bool {
+	return slices.Contains(cc.NodeIPList(), "auto")
 }
 
 // ClusterNodeType represents the type of a cluster node

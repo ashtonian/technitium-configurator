@@ -44,13 +44,6 @@ func TestE2EIdempotency(t *testing.T) {
 
 	startDNSServer(t, port)
 	waitForHealth(t, apiURL+"/api/status", 60*time.Second)
-	bootstrap := filepath.Join(t.TempDir(), "bootstrap.yaml")
-	if err := os.WriteFile(bootstrap, []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runConfigurator(t, bin, "configure", envMap{
-		"DNS_API_URL": apiURL, "DNS_USERNAME": defaultUser, "DNS_PASSWORD": defaultPassword, "DNS_NEW_PASSWORD": newPassword,
-	}, bootstrap)
 
 	testDir, err := os.Getwd()
 	if err != nil {
@@ -91,10 +84,11 @@ func TestE2EIdempotency(t *testing.T) {
 
 	// configure (DNS settings + zone + records)
 	runConfigurator(t, bin, "configure", envMap{
-		"DNS_API_URL":   apiURL,
-		"DNS_USERNAME":  defaultUser,
-		"DNS_PASSWORD":  newPassword,
-		"DNS_LOG_LEVEL": "info",
+		"DNS_API_URL":      apiURL,
+		"DNS_USERNAME":     defaultUser,
+		"DNS_PASSWORD":     newPassword,
+		"DNS_NEW_PASSWORD": "must-not-change-configure-credentials",
+		"DNS_LOG_LEVEL":    "info",
 	}, dnsConfigPath)
 
 	// Verify state via API
@@ -221,6 +215,19 @@ func TestE2ECluster(t *testing.T) {
 	}
 }
 
+func TestE2EReconcileBootstrap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	requireDocker(t)
+	bin := buildBinary(t)
+	port := freePort(t)
+	apiURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	startDNSServer(t, port)
+	waitForHealth(t, apiURL+"/api/status", 60*time.Second)
+	verifyReconciliation(t, bin, apiURL, "", "bootstrap")
+}
+
 func testE2ECluster(t *testing.T, bin, mode string) {
 	primaryPort := freePort(t)
 	secondaryPort := freePort(t)
@@ -242,18 +249,16 @@ func testE2ECluster(t *testing.T, bin, mode string) {
 	// Only the primary's password changes. The secondary keeps its default
 	// credentials and loses them when joining, since joining replaces its
 	// users with the primary's.
-	if mode == "literal" {
-		runConfigurator(t, bin, "change-password", envMap{
-			"DNS_API_URL":      primaryAPIURL,
-			"DNS_USERNAME":     defaultUser,
-			"DNS_PASSWORD":     defaultPassword,
-			"DNS_NEW_PASSWORD": newPassword,
-			"DNS_LOG_LEVEL":    "info",
-		})
-	}
+	runConfigurator(t, bin, "change-password", envMap{
+		"DNS_API_URL":      primaryAPIURL,
+		"DNS_USERNAME":     defaultUser,
+		"DNS_PASSWORD":     defaultPassword,
+		"DNS_NEW_PASSWORD": newPassword,
+		"DNS_LOG_LEVEL":    "info",
+	})
 	configuredPrimary, configuredSecondary := primaryIP, secondaryIP
 	if mode == "automatic" {
-		configuredPrimary, configuredSecondary = "auto", "auto"
+		configuredPrimary, configuredSecondary = "auto,"+primaryIP, "auto,"+secondaryIP
 	}
 
 	// Primary config: cluster init + DNS settings + zone + records.
@@ -437,10 +442,6 @@ apps:
 		"DNS_USERNAME":  defaultUser,
 		"DNS_PASSWORD":  newPassword,
 		"DNS_LOG_LEVEL": "info",
-	}
-	if mode == "automatic" {
-		initial["DNS_PASSWORD"] = defaultPassword
-		initial["DNS_NEW_PASSWORD"] = newPassword
 	}
 	runConfigurator(t, bin, "configure", initial, primaryCfgPath)
 
@@ -729,7 +730,6 @@ func waitCatalogAddress(t *testing.T, apiURL, token, clusterDomain, address stri
 
 func verifyReconciliation(t *testing.T, bin, apiURL, token, mode string) {
 	t.Helper()
-	verificationToken := loginAndGetToken(t, apiURL, defaultUser, newPassword)
 	backend, err := url.Parse(apiURL)
 	if err != nil {
 		t.Fatal(err)
@@ -755,11 +755,15 @@ func verifyReconciliation(t *testing.T, bin, apiURL, token, mode string) {
 	}
 	initialName := mode + ".reconciled." + zoneName
 	reloadedName := mode + ".reloaded." + zoneName
-	write("records:\n  - {domain: " + initialName + ", type: A, ipAddress: 192.0.2.73}\n")
+	write("zones:\n  - {zone: " + zoneName + ", type: Primary}\nrecords:\n  - {domain: " + initialName + ", type: A, ipAddress: 192.0.2.73}\n")
 	environment := envMap{
 		"DNS_API_URL": server.URL, "DNS_USERNAME": defaultUser, "DNS_PASSWORD": newPassword,
 		"DNS_RECONCILE_INTERVAL": "1s", "DNS_RECONCILE_TIMEOUT": "30s",
 		"DNS_WAIT_TIMEOUT": "0",
+	}
+	if mode == "bootstrap" {
+		environment["DNS_PASSWORD"] = defaultPassword
+		environment["DNS_NEW_PASSWORD"] = newPassword
 	}
 	tokenFile := filepath.Join(t.TempDir(), "api-token")
 	if mode == "token-file" {
@@ -816,6 +820,7 @@ func verifyReconciliation(t *testing.T, bin, apiURL, token, mode string) {
 		}
 	}
 	wait("Configuration complete")
+	verificationToken := loginAndGetToken(t, apiURL, defaultUser, newPassword)
 	verifyRecordExists(t, apiURL, verificationToken, initialName, "A", zoneName)
 	unavailable.Store(true)
 	wait("Reconciliation failed")

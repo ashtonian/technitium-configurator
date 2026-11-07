@@ -9,7 +9,7 @@ import (
 	"github.com/ashtonian/technitium-configurator/v3/pkg/technitium"
 )
 
-func runReconcile(ctx context.Context, cfg *technitium.ClientConfig, paths []string, stdout io.Writer) error {
+func runReconcile(ctx context.Context, cfg *technitium.ClientConfig, paths []string, _ io.Writer) error {
 	client, err := technitium.NewClient(cfg)
 	if err != nil {
 		return err
@@ -23,7 +23,7 @@ func runReconcile(ctx context.Context, cfg *technitium.ClientConfig, paths []str
 		if err := current.LoadAPITokenFile("reconcile"); err != nil {
 			return err
 		}
-		return runConfigure(pass, &current, paths, stdout)
+		return configurePass(pass, &current, paths, true)
 	}, sleepCtx)
 }
 

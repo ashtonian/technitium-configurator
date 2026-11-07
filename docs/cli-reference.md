@@ -45,7 +45,7 @@ Each client configuration value can come from a default, a client config file (`
 | `DNS_K8S_SECRET_NAMESPACE` | `k8s_secret_namespace` | | string | current namespace | Namespace of that Secret. Unset, it is the current namespace as `kubectl` chooses it: the kubeconfig context's, else the pod's own, else `default` |
 | `DNS_K8S_SECRET_KEY` | `k8s_secret_key` | | string | `api-token` | Key in that Secret |
 
-`configure`, `reconcile`, `export` and `cluster-state` need a token, a token file, or a username and password. `create-token` and `change-password` need a username and password. With `DNS_NEW_PASSWORD` and password authentication, `configure` and `reconcile` first try the new password; otherwise they authenticate with the original password, change it and continue with the new one. This supports a controller starting beside a fresh server without shell bootstrap steps.
+`configure`, `reconcile`, `export` and `cluster-state` need a token, a token file, or a username and password. `create-token` and `change-password` need a username and password. With `DNS_NEW_PASSWORD` and password authentication, `reconcile` first tries the new password; otherwise they authenticate with the original password, change it and continue with the new one. This supports a controller starting beside a fresh server without shell bootstrap steps.
 
 A client config file:
 
