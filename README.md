@@ -135,3 +135,20 @@ See the [documentation index](docs/README.md) and the complete
 ## License
 
 [MIT](LICENSE).
+
+## CI artifact storage
+
+Workflow artifacts and Docker build records use the shared
+[SeaweedFS artifact actions](https://github.com/ashtonian/go-ci-actions/blob/main/docs/artifacts.md).
+Set repository variable `CI_ARTIFACT_ENDPOINT` to the authenticated HTTPS gateway
+and grant artifact jobs `id-token: write`. No long-lived storage secret is needed.
+Docker's implicit GitHub artifact upload is disabled; the build-record action
+exports the exact Buildx record with seven-day retention. Image publishing,
+attestations and build caches keep their existing contracts.
+
+The Artifact storage workflow checks repository access and a byte-for-byte
+upload/download round trip. Artifact summaries provide the manifest key and digest;
+retrieve new artifacts with the shared download action or authenticated operator
+S3 access. `gh run download` applies only to older GitHub-stored artifacts. On an
+OIDC or upload failure, check the repository variable, job permissions and gateway
+health; do not replace it with a public bucket or persistent runner credentials.

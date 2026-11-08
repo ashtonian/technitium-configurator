@@ -1,0 +1,23 @@
+name: Artifact storage
+on:
+  push:
+    branches: [main]
+    paths: ['.github/**']
+  pull_request:
+    paths: ['.github/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: artifact-storage-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contract:
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    uses: ashtonian/go-ci-actions/.github/workflows/artifact-consumer.yml@5ed85c722700f3675446beb02b8a581c2c8ea89b # v1.3.1
+    with:
+      runner: arc-technitium-configurator
