@@ -18,9 +18,35 @@ env:
   REGISTRY: docker.io
   IMAGE_NAME: ${{ github.repository }}
 
+# A pull request's run ends by recording a receipt of the tested merge tree
+# (go-ci-actions acceptance). The push to main that merges it skips the
+# checks that passed on the same tree and only builds and pushes the beta
+# image. Tags run everything.
 jobs:
+  acceptance:
+    name: reuse pull request validation
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor_id == '4212452'
+    runs-on: arc-technitium-configurator
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      reused: ${{ steps.verify.outputs.reused }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: verify
+        uses: ashtonian/go-ci-actions/acceptance@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
+        with:
+          mode: verify
+          variables: ${{ toJSON(vars) }}
   test:
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    needs: acceptance
+    # !cancelled() runs the job when acceptance is skipped, as on pull requests and tags.
+    if: ${{ !cancelled() && needs.acceptance.outputs.reused != 'true' && github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: arc-technitium-configurator
     permissions:
       id-token: write
@@ -90,7 +116,7 @@ jobs:
   # provenance and an SBOM. The binaries are cross-compiled on the runner with
   # its remote build cache, checked, and copied into the image as they are.
   build-and-push:
-    # Runs after the tests pass.
+    # Runs after the tests pass, or without them when acceptance reused them.
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: arc-technitium-configurator
     needs: [ test, e2e ]
@@ -191,6 +217,26 @@ jobs:
         uses: ashtonian/go-ci-actions/build-record@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
         with:
           metadata: ${{ steps.artifact-build-1.outputs.metadata }}
+
+  accepted:
+    name: record validation
+    needs: [ test, e2e, build-and-push ]
+    # Without a status function this runs only when every need succeeded.
+    if: github.event_name == 'pull_request'
+    runs-on: arc-technitium-configurator
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ashtonian/go-ci-actions/acceptance@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
+        with:
+          mode: record
+          results: ${{ toJSON(needs) }}
+          variables: ${{ toJSON(vars) }}
 
   release:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && (startsWith(github.ref, 'refs/tags/v'))
