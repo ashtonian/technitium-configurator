@@ -42,7 +42,7 @@ jobs:
       id-token: write
     outputs:
       # The checks to run, after the merge push's reuse of its pull request.
-      jobs: ${{ steps.accepted.outputs.reused == 'true' && '[]' || steps.scope.outputs.jobs }}
+      jobs: ${{ steps.accepted.outputs.remaining || steps.scope.outputs.jobs }}
       # What the change touches, for the image publish the reuse never skips.
       selected: ${{ steps.scope.outputs.jobs }}
       packages: ${{ steps.packages.outputs.list }}
