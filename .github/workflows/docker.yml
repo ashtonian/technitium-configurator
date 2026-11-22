@@ -14,7 +14,7 @@ concurrency:
 
 env:
   DOCKER_BUILD_RECORD_UPLOAD: "false"
-  CI_ARTIFACT_ENDPOINT: ${{ vars.CI_ARTIFACT_ENDPOINT }}
+  CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
   REGISTRY: docker.io
   IMAGE_NAME: ${{ github.repository }}
 
