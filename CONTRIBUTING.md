@@ -14,8 +14,11 @@ index](docs/README.md) for usage and configuration guides.
 go build -o technitium-configurator .
 ./technitium-configurator version
 
-docker build -t technitium-configurator .
-docker buildx build --platform linux/amd64,linux/arm64 -t technitium-configurator .
+# The image packages binaries cross-compiled on the host, one per platform
+# at build/image/<os>/<arch>/technitium-configurator.
+scripts/build-binaries.sh build/image dev "$(git rev-parse HEAD)" unknown linux/amd64 linux/arm64
+scripts/verify-binaries.sh build/image dev
+docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t technitium-configurator build/image
 
 go test -race ./...                  # unit tests, including DNS configs in the README, docs/ and examples/
 go test -tags e2e ./e2e              # needs Docker; defaults to Technitium 15.6.2 containers
@@ -25,7 +28,7 @@ The unit tests load every `yaml` block in `README.md`, `docs/*.md` and `.github/
 
 The e2e suite checks the values a fresh install ends up with; that an unchanged re-run writes nothing but settings and zone options; record policies and values the server stores in another form; PTR preservation; IDN names; ACL clearing; administration; export applied back to its server and restored onto a fresh one; a re-run authenticated with the token file `create-token` wrote; the binary's exit codes and output streams; and a two-node cluster in which zones replicate, a local zone stays local, and the secondary re-runs with its original credentials and with a token it no longer has.
 
-GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on every pull request and push. Only when they pass does it build both platforms' binaries, check each one's architecture and that it reports the version (for a release, the tag without its `v`), and then build and push the images from the same inputs. Pushes to `main` publish `beta` and `beta-<date>-<sha>`. A `v*` tag publishes `<version>` (and `v<version>` for versions without a prerelease suffix), moves `latest` only for those, marks tags with a suffix as prereleases, and creates a GitHub release from that version's section of `RELEASE_NOTES.md`.
+GitHub Actions runs vet, lint, the unit tests, govulncheck and the e2e suite on every pull request, tag and push. Only when they pass does it cross-compile the binaries on the runner, check each one's architecture and that it reports the version (for a release, the tag without its `v`), and then build the image from those same binaries: a pull request builds linux/amd64 only, pushes nothing and adds no attestations; `main` and tags build both platforms and push them with provenance and an SBOM. Pushes to `main` publish `beta` and `beta-<date>-<sha>`. A `v*` tag publishes `<version>` (and `v<version>` for versions without a prerelease suffix), moves `latest` only for those, marks tags with a suffix as prereleases, and creates a GitHub release from that version's section of `RELEASE_NOTES.md`.
 
 ## Code map
 
@@ -65,5 +68,8 @@ and virtual time for retry/deadline behavior.
 | `examples/docker-compose.yaml` | One server, configured by Compose |
 | `examples/cluster/` | Two-node cluster with Compose: `compose.yaml`, `primary.yaml`, `secondary.yaml` |
 | `examples/k8s.yaml` | Kubernetes Job, RBAC and credentials |
+| `Dockerfile` | The image: a platform's pre-built binary and a CA bundle on `scratch` |
+| `scripts/build-binaries.sh` | Cross-compiles the image's binaries into the per-platform layout the `Dockerfile` copies from |
+| `scripts/verify-binaries.sh` | Checks each binary's architecture and reported version by running it through BuildKit |
 | `.github/workflows/` | CI: test, e2e, image build and release (`docker.yml`); Docker Hub overview publishing (`dockerhub-description.yml`) |
 | `.github/DOCKERHUB.md` | The Docker Hub overview; changes are published when they reach `main` |

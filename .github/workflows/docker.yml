@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+        uses: ashtonian/go-ci-actions@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
         with:
           go-version-file: go.mod
 
@@ -79,20 +79,29 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+        uses: ashtonian/go-ci-actions@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
         with:
           go-version-file: go.mod
 
       - name: End-to-end tests
         run: go test -tags e2e -v -count=1 -timeout 20m ./e2e/...
+  # Pull requests build linux/amd64 only and push nothing, without
+  # attestations; main and tags build both platforms and push them with
+  # provenance and an SBOM. The binaries are cross-compiled on the runner with
+  # its remote build cache, checked, and copied into the image as they are.
   build-and-push:
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    # Runs after the tests pass.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: arc-technitium-configurator
     needs: [ test, e2e ]
+    timeout-minutes: 20
     permissions:
       id-token: write
       contents: read
       packages: write
+    env:
+      PUSH: ${{ github.event_name != 'pull_request' }}
+      PLATFORMS: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
 
     steps:
       - name: Checkout repository
@@ -100,15 +109,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Login to DockerHub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+      - name: Set up Go
+        uses: ashtonian/go-ci-actions@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          go-version-file: go.mod
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -130,83 +134,61 @@ jobs:
             # Pull requests (built, never pushed): gives the binary a version
             type=ref,event=pr
 
-      - name: Restore Docker Go caches
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .build-cache
-          key: docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-
-            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-
-      - name: Restore BuildKit Go caches
-        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
-        with:
-          scratch-dir: ${{ runner.temp }}/buildkit-cache-dance
-          cache-map: |
-            {
-              ".build-cache/go-build": "/root/.cache/go-build",
-              ".build-cache/go-mod": "/go/pkg/mod"
-            }
+      - name: Cross-compile the binaries
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          BUILD_DATE: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+        run: |
+          IFS=, read -r -a platforms <<<"$PLATFORMS"
+          scripts/build-binaries.sh "$RUNNER_TEMP/image" "${VERSION:-dev}" "$GITHUB_SHA" "$BUILD_DATE" "${platforms[@]}"
 
-      # The arm64 image once shipped an x86-64 binary (#4). Build each
-      # platform's binary with the publishing step's inputs and check its
-      # architecture and version before anything is pushed. The build is
-      # reproducible, so the push below reuses these layers from the cache.
-      - name: Build binaries for verification
-        id: artifact-build-2
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          outputs: type=local,dest=out
-          cache-from: type=gha,scope=technitium-configurator
-          cache-to: type=gha,mode=max,scope=technitium-configurator
-          build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
-            REVISION=${{ github.sha }}
-            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-      - name: Preserve Docker build record
-        if: always() && (steps.artifact-build-2.outcome == 'success' || steps.artifact-build-2.outcome == 'failure')
-        timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@b9663a3e11da9a4d13f7832ed02e8e057ad9d70e # v1.4.0
-        with:
-          metadata: ${{ steps.artifact-build-2.outputs.metadata }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # The arm64 image once shipped an x86-64 binary (#4). Check each
+      # platform's binary, the one the image will hold, before anything is
+      # pushed.
       - name: Verify binaries
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           # A release must report its tag without the "v", whatever
           # metadata-action derived; other builds report the metadata version.
-          # The Dockerfile falls back to "dev" when no version is given.
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             expected="${GITHUB_REF_NAME#v}"
           else
             expected="${VERSION:-dev}"
           fi
-          scripts/verify-binaries.sh out "$expected"
+          IFS=, read -r -a platforms <<<"$PLATFORMS"
+          scripts/verify-binaries.sh "$RUNNER_TEMP/image" "$expected" "${platforms[@]}"
+
+      - name: Login to DockerHub
+        if: env.PUSH == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
         id: artifact-build-1
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          context: ${{ runner.temp }}/image
+          file: Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ env.PUSH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=technitium-configurator
-          cache-to: type=gha,mode=max,scope=technitium-configurator
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             REVISION=${{ github.sha }}
             BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-          provenance: mode=max
-          sbom: true
+          provenance: ${{ env.PUSH == 'true' && 'mode=max' || 'false' }}
+          sbom: ${{ env.PUSH == 'true' }}
       - name: Preserve Docker build record
         if: always() && (steps.artifact-build-1.outcome == 'success' || steps.artifact-build-1.outcome == 'failure')
         timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@b9663a3e11da9a4d13f7832ed02e8e057ad9d70e # v1.4.0
+        uses: ashtonian/go-ci-actions/build-record@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
         with:
           metadata: ${{ steps.artifact-build-1.outputs.metadata }}
 
