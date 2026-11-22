@@ -41,4 +41,4 @@
 - **Tokens in the environment.** A process's environment is visible to `docker inspect`, `/proc` and Kubernetes pod specs. Prefer `DNS_API_TOKEN_FILE`, with the file mounted from a secret, to `DNS_API_TOKEN`.
 - **Secrets in config.** TSIG secrets, proxy and app credentials and initial user passwords may appear in DNS config files and in `export` output; store them as secrets. Prefer `passwordEnv` or `passwordFile` to `password`.
 - **Clusters.** `ignoreCertErrors` applies only to the join call; use it only on networks you trust.
-- **Image.** `FROM scratch`, a pinned builder image, no shell, non-root user `65532`.
+- **Image.** `FROM scratch` with the CA bundle of a pinned distroless image and a binary cross-compiled outside the image build, no shell, non-root user `65532`.

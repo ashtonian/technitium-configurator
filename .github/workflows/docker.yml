@@ -7,6 +7,10 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
+  # The full, unscoped run; it does nothing when main has not moved since the
+  # last green one (go-ci-actions scope).
+  schedule:
+    - cron: "9 5 * * *"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,13 +22,111 @@ env:
   REGISTRY: docker.io
   IMAGE_NAME: ${{ github.repository }}
 
+# The scope job decides which jobs a change needs and which packages they
+# check: the changed packages and every package that imports one
+# (go-ci-actions scope). A pull request is measured from its base, a push to
+# main from the last green run there, and the push that merges a pull request
+# skips the checks that pull request passed on the same tree (go-ci-actions
+# acceptance); it still builds and pushes the beta image when the image's
+# inputs changed. Tags, the nightly schedule, a manual run and the full-ci
+# label check everything.
 jobs:
-  test:
+  scope:
+    name: scope
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-technitium-configurator
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      # The checks to run, after the merge push's reuse of its pull request.
+      jobs: ${{ steps.accepted.outputs.remaining || steps.scope.outputs.jobs }}
+      # What the change touches, for the image publish the reuse never skips.
+      selected: ${{ steps.scope.outputs.jobs }}
+      packages: ${{ steps.packages.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Go loads the package graph.
+      - uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        with:
+          go-version-file: go.mod
+      # pkg/technitium's docs test loads every DNS config in README.md,
+      # .github/DOCKERHUB.md, docs/*.md and examples/. The e2e suite builds
+      # the binary (the root package) and drives it.
+      - id: scope
+        uses: ashtonian/go-ci-actions/scope@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        with:
+          jobs: |
+            {
+              "test": {"go": ["./..."]},
+              "e2e": {"go": [".", "./e2e"]},
+              "build-and-push": {"paths": ["Dockerfile", "scripts/build-binaries.sh", "scripts/verify-binaries.sh"], "go": ["."]}
+            }
+          shared: |
+            .github/workflows/docker.yml
+          go-tags: e2e
+          go-owners: |
+            {
+              "README.md": ["./pkg/technitium"],
+              ".github/DOCKERHUB.md": ["./pkg/technitium"],
+              "docs/*.md": ["./pkg/technitium"],
+              "examples/config.yaml": ["./pkg/technitium"],
+              "examples/cluster/primary.yaml": ["./pkg/technitium"],
+              "examples/cluster/secondary.yaml": ["./pkg/technitium"],
+              "examples/k8s.yaml": ["./pkg/technitium"]
+            }
+          go-ignore: |
+            .github/workflows/**
+            .github/actionlint.yaml
+            .github/dependabot.yml
+            .github/release.yml
+            .gitignore
+            CONTRIBUTING.md
+            Dockerfile
+            LICENSE
+            RELEASE_NOTES.md
+            examples/cluster/compose.yaml
+            examples/docker-compose.yaml
+            scripts/**
+      # The packages test checks: the affected ones, or all of them when the
+      # scope widened.
+      - id: packages
+        env:
+          FULL: ${{ steps.scope.outputs.full }}
+          GO_PACKAGES: ${{ steps.scope.outputs.go-packages }}
+        run: |
+          if [[ $FULL == true ]]; then
+            echo "list=./..." >>"$GITHUB_OUTPUT"
+          else
+            echo "list=$(jq -r '.["."] // [] | join(" ")' <<<"$GO_PACKAGES")" >>"$GITHUB_OUTPUT"
+          fi
+      # The merge push's own checks, without the image publish, which only a
+      # push does.
+      - id: required
+        if: github.event_name == 'push'
+        env:
+          JOBS: ${{ steps.scope.outputs.jobs }}
+        run: echo "jobs=$(jq -c 'map(select(. != "build-and-push"))' <<<"$JOBS")" >>"$GITHUB_OUTPUT"
+      - id: accepted
+        if: github.event_name == 'push'
+        uses: ashtonian/go-ci-actions/acceptance@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        with:
+          mode: verify
+          required: ${{ steps.required.outputs.jobs }}
+          variables: ${{ toJSON(vars) }}
+  test:
+    needs: scope
+    if: contains(needs.scope.outputs.jobs, '"test"')
     runs-on: arc-technitium-configurator
     permissions:
       id-token: write
       contents: read
+    env:
+      PACKAGES: ${{ needs.scope.outputs.packages }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,32 +134,53 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+        uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
         with:
           go-version-file: go.mod
 
+      # PACKAGES is a space-separated list of package directories. The e2e
+      # tag adds only the e2e package, so one tagged vet covers both builds.
       - name: Vet
         run: |
-          go vet ./...
-          go vet -tags e2e ./e2e
+          read -r -a packages <<<"$PACKAGES"
+          go vet -tags e2e "${packages[@]}"
 
       - name: Lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.14.0
-          args: --build-tags e2e
+          install-only: true
+      - name: golangci-lint
+        run: |
+          read -r -a packages <<<"$PACKAGES"
+          golangci-lint run --build-tags e2e "${packages[@]}"
+
+      # The e2e package exists only under its tag; the untagged unit tests and
+      # scan leave it out (go refuses to name it), and keep any package that
+      # fails to load for another reason so the command reports it.
+      - name: Unit packages
+        run: |
+          read -r -a packages <<<"$PACKAGES"
+          go list -e -f '{{.ImportPath}}{{"\t"}}{{if .Error}}{{.Error.Err}}{{end}}' "${packages[@]}" |
+            awk -F'\t' '$2 !~ /build constraints exclude all Go files/ {print $1}' >"$RUNNER_TEMP/unit-packages"
 
       - name: Unit tests
-        run: go test -race -count=1 ./...
+        run: |
+          mapfile -t unit <"$RUNNER_TEMP/unit-packages"
+          if ((${#unit[@]})); then go test -race -count=1 "${unit[@]}"; fi
 
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+        run: |
+          mapfile -t unit <"$RUNNER_TEMP/unit-packages"
+          if ((${#unit[@]})); then go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 "${unit[@]}"; fi
   e2e:
     name: e2e (Technitium ${{ matrix.server }})
-    # Exercise standalone and clustered servers on both supported patch versions.
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    # Exercise standalone and clustered servers on both supported patch
+    # versions, after the unit tests pass or without them when the change
+    # needs only e2e.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && contains(needs.scope.outputs.jobs, '"e2e"') }}
     runs-on: arc-technitium-configurator
-    needs: test
+    needs: [ scope, test ]
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -79,20 +202,32 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+        uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
         with:
           go-version-file: go.mod
 
       - name: End-to-end tests
         run: go test -tags e2e -v -count=1 -timeout 20m ./e2e/...
+  # Pull requests and the nightly build linux/amd64 only and push nothing,
+  # without attestations; main (on a push or a manual run) and tags build
+  # both platforms and push them with provenance and an SBOM. The binaries
+  # are cross-compiled on the runner with its remote build cache, checked,
+  # and copied into the image as they are.
   build-and-push:
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    # After the tests pass, or without them when the change needs none or
+    # the merge push reused them. A push publishes whenever the image's
+    # inputs changed, whatever the reuse.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && contains(github.event_name == 'push' && needs.scope.outputs.selected || needs.scope.outputs.jobs, '"build-and-push"') }}
     runs-on: arc-technitium-configurator
-    needs: [ test, e2e ]
+    needs: [ scope, test, e2e ]
+    timeout-minutes: 20
     permissions:
       id-token: write
       contents: read
       packages: write
+    env:
+      PUSH: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+      PLATFORMS: ${{ (github.event_name == 'pull_request' || github.event_name == 'schedule') && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
 
     steps:
       - name: Checkout repository
@@ -100,15 +235,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Login to DockerHub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+      - name: Set up Go
+        uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          go-version-file: go.mod
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -130,85 +260,84 @@ jobs:
             # Pull requests (built, never pushed): gives the binary a version
             type=ref,event=pr
 
-      - name: Restore Docker Go caches
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .build-cache
-          key: docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-
-            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-
-      - name: Restore BuildKit Go caches
-        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
-        with:
-          scratch-dir: ${{ runner.temp }}/buildkit-cache-dance
-          cache-map: |
-            {
-              ".build-cache/go-build": "/root/.cache/go-build",
-              ".build-cache/go-mod": "/go/pkg/mod"
-            }
+      - name: Cross-compile the binaries
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          BUILD_DATE: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+        run: |
+          IFS=, read -r -a platforms <<<"$PLATFORMS"
+          scripts/build-binaries.sh "$RUNNER_TEMP/image" "${VERSION:-dev}" "$GITHUB_SHA" "$BUILD_DATE" "${platforms[@]}"
 
-      # The arm64 image once shipped an x86-64 binary (#4). Build each
-      # platform's binary with the publishing step's inputs and check its
-      # architecture and version before anything is pushed. The build is
-      # reproducible, so the push below reuses these layers from the cache.
-      - name: Build binaries for verification
-        id: artifact-build-2
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          outputs: type=local,dest=out
-          cache-from: type=gha,scope=technitium-configurator
-          cache-to: type=gha,mode=max,scope=technitium-configurator
-          build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
-            REVISION=${{ github.sha }}
-            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-      - name: Preserve Docker build record
-        if: always() && (steps.artifact-build-2.outcome == 'success' || steps.artifact-build-2.outcome == 'failure')
-        timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@b9663a3e11da9a4d13f7832ed02e8e057ad9d70e # v1.4.0
-        with:
-          metadata: ${{ steps.artifact-build-2.outputs.metadata }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # The arm64 image once shipped an x86-64 binary (#4). Check each
+      # platform's binary, the one the image will hold, before anything is
+      # pushed.
       - name: Verify binaries
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           # A release must report its tag without the "v", whatever
           # metadata-action derived; other builds report the metadata version.
-          # The Dockerfile falls back to "dev" when no version is given.
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             expected="${GITHUB_REF_NAME#v}"
           else
             expected="${VERSION:-dev}"
           fi
-          scripts/verify-binaries.sh out "$expected"
+          IFS=, read -r -a platforms <<<"$PLATFORMS"
+          scripts/verify-binaries.sh "$RUNNER_TEMP/image" "$expected" "${platforms[@]}"
+
+      - name: Login to DockerHub
+        if: env.PUSH == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
         id: artifact-build-1
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          context: ${{ runner.temp }}/image
+          file: Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ env.PUSH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=technitium-configurator
-          cache-to: type=gha,mode=max,scope=technitium-configurator
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             REVISION=${{ github.sha }}
             BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-          provenance: mode=max
-          sbom: true
+          provenance: ${{ env.PUSH == 'true' && 'mode=max' || 'false' }}
+          sbom: ${{ env.PUSH == 'true' }}
       - name: Preserve Docker build record
         if: always() && (steps.artifact-build-1.outcome == 'success' || steps.artifact-build-1.outcome == 'failure')
         timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@b9663a3e11da9a4d13f7832ed02e8e057ad9d70e # v1.4.0
+        uses: ashtonian/go-ci-actions/build-record@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
         with:
           metadata: ${{ steps.artifact-build-1.outputs.metadata }}
+
+  accepted:
+    name: record validation
+    needs: [ scope, test, e2e, build-and-push ]
+    # When no selected job failed. The status check must be explicit: with
+    # the default success(), a job the scope skipped would skip this one.
+    if: ${{ github.event_name == 'pull_request' && !cancelled() && needs.scope.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: arc-technitium-configurator
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ashtonian/go-ci-actions/acceptance@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        with:
+          mode: record
+          results: ${{ toJSON(needs) }}
+          variables: ${{ toJSON(vars) }}
 
   release:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && (startsWith(github.ref, 'refs/tags/v'))

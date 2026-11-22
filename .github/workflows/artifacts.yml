@@ -1,8 +1,7 @@
 name: Artifact storage
+# The pull request that changes CI checks the runner's artifact access; the
+# push that merges it would repeat the same check on the same runners.
 on:
-  push:
-    branches: [main]
-    paths: ['.github/**']
   pull_request:
     paths: ['.github/**']
   workflow_dispatch:
@@ -18,7 +17,7 @@ concurrency:
 jobs:
   contract:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    uses: ashtonian/go-ci-actions/.github/workflows/artifact-consumer.yml@ce77d25782e078b8e9a5d4ed2e6c53c4ae54927c # v1.6.4
+    uses: ashtonian/go-ci-actions/.github/workflows/artifact-consumer.yml@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
     with:
       runner: arc-technitium-configurator
     secrets:
