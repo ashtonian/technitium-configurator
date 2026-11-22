@@ -51,14 +51,14 @@ jobs:
         with:
           persist-credentials: false
       # Go loads the package graph.
-      - uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version-file: go.mod
       # pkg/technitium's docs test loads every DNS config in README.md,
       # .github/DOCKERHUB.md, docs/*.md and examples/. The e2e suite builds
       # the binary (the root package) and drives it.
       - id: scope
-        uses: ashtonian/go-ci-actions/scope@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        uses: ashtonian/go-ci-actions/scope@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           jobs: |
             {
@@ -113,10 +113,11 @@ jobs:
         run: echo "jobs=$(jq -c 'map(select(. != "build-and-push"))' <<<"$JOBS")" >>"$GITHUB_OUTPUT"
       - id: accepted
         if: github.event_name == 'push'
-        uses: ashtonian/go-ci-actions/acceptance@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           mode: verify
           required: ${{ steps.required.outputs.jobs }}
+          base: ${{ steps.scope.outputs.base }}
           variables: ${{ toJSON(vars) }}
   test:
     needs: scope
@@ -134,7 +135,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version-file: go.mod
 
@@ -202,7 +203,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version-file: go.mod
 
@@ -236,7 +237,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version-file: go.mod
 
@@ -314,7 +315,7 @@ jobs:
       - name: Preserve Docker build record
         if: always() && (steps.artifact-build-1.outcome == 'success' || steps.artifact-build-1.outcome == 'failure')
         timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        uses: ashtonian/go-ci-actions/build-record@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           metadata: ${{ steps.artifact-build-1.outputs.metadata }}
 
@@ -333,7 +334,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions/acceptance@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+      - uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           mode: record
           results: ${{ toJSON(needs) }}
