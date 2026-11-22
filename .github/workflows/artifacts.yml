@@ -18,6 +18,8 @@ concurrency:
 jobs:
   contract:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    uses: ashtonian/go-ci-actions/.github/workflows/artifact-consumer.yml@5ed85c722700f3675446beb02b8a581c2c8ea89b # v1.3.1
+    uses: ashtonian/go-ci-actions/.github/workflows/artifact-consumer.yml@ce77d25782e078b8e9a5d4ed2e6c53c4ae54927c # v1.6.4
     with:
       runner: arc-technitium-configurator
+    secrets:
+      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
